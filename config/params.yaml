@@ -1,0 +1,16 @@
+reception_orchestrator:
+  ros__parameters:
+    discord.adapter_name: "discord"
+    discord.parent_channel_id: ""
+    session.inactivity_reset_sec: 60
+    barge_in.min_speech_sec: 0.25
+    response.followup_debounce_sec: 1.2
+    response.followup_merge_window_ms: 1200
+    dialog.chat_action_name: "/dialog_llm/chat"
+    dialog.status_topic: "/dialog_llm/status"
+    dialog.temperature: 0.3
+    dialog.max_tokens: 48
+    supervisor.chat_action_name: "/supervisor_llm/chat"
+    supervisor.status_topic: "/supervisor_llm/status"
+    supervisor.temperature: 0.0
+    supervisor.max_tokens: 48
