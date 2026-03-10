@@ -1,0 +1,32 @@
+{
+  "gap_sec": 0.2,
+  "settle_sec": 5.0,
+  "turns": [
+    "こんにちは",
+    "私の名前は島中です",
+    "菅谷研究室に所属しており、学長に会いに来ました",
+    "はい"
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "visitor_info": {
+      "name": "島中",
+      "affiliation": "菅谷研究室",
+      "purpose": "学長に会いに来ました"
+    },
+    "max_tts_started_latency_ms": 4000,
+    "required_events": [
+      "tts_started"
+    ],
+    "required_any_events": [
+      [
+        "semantic_turn_merged",
+        "llm_result_buffered"
+      ],
+      [
+        "semantic_turn_merged",
+        "pending_response_collapsed"
+      ]
+    ]
+  }
+}

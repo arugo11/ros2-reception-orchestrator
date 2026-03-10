@@ -1,0 +1,19 @@
+profile_name: qwen35_2b
+task: llm
+runner: vllm
+repo_id: Qwen/Qwen3.5-2B
+device: cuda:0
+dtype: bfloat16
+context_len: 1024
+gpu_memory_utilization: 0.38
+trust_remote_code: true
+startup_args:
+  - --enforce-eager
+  - --generation-config
+  - vllm
+  - --max-num-seqs
+  - "1"
+expected_languages:
+  - ja
+latency_target_ms: 1100
+quality_notes: Qwen3.5 2B candidate prioritizing semantic extraction quality within the 16GB reception stack budget.

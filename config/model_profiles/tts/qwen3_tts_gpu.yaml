@@ -1,0 +1,19 @@
+profile_name: qwen3_tts_gpu
+task: tts
+runner: custom_python
+repo_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+backend_class: tts_server.backends.qwen_tts:QwenTtsBackend
+device: cuda:0
+dtype: bfloat16
+context_len: 0
+memory_budget_mb: 4096
+trust_remote_code: true
+startup_args: []
+voice_instruction: 落ち着いた丁寧な日本語の大学受付音声
+warmup_enabled: true
+warmup_text: 受付を開始します。
+playback_sample_rate_hz: 24000
+expected_languages:
+  - ja
+latency_target_ms: 700
+quality_notes: Default GPU TTS profile for reception.

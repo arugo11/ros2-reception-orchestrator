@@ -17,14 +17,17 @@ Phase = Literal[
 
 FieldName = Literal['name', 'affiliation', 'purpose']
 DialogAct = Literal[
+    'greet',
     'ask_name',
     'ask_affiliation',
     'ask_purpose',
+    'ack_correction',
     'confirm',
     'notify_waiting',
     'acknowledge_waiting',
     'clarify',
     'retry',
+    'close',
     'relay_secretary',
 ]
 SpeechAct = Literal[
@@ -90,6 +93,7 @@ class SupervisorDecision:
     correction_target: CorrectionTarget = 'none'
     discord_update_kind: DiscordUpdateKind = 'none'
     ignore_input: bool = False
+    spoken_response: str | None = None
 
 
 @dataclass(slots=True)
@@ -106,6 +110,7 @@ class SessionState:
     recent_events: list[str] = field(default_factory=list)
     latest_turn_id: int = 0
     latest_spoken_turn_id: int = 0
+    last_spoken_text: str = ''
     secretary_replied: bool = False
 
     def touch(self, now: datetime) -> None:
@@ -119,6 +124,7 @@ class SessionSnapshot:
     visitor_info: VisitorInfo
     last_user_utterance: str
     last_dialog_act: DialogAct | None
+    last_spoken_text: str
     pending_confirmation: VisitorInfo | None
     latest_turn_id: int
 
@@ -149,7 +155,8 @@ class DialogRenderRequest:
 class ReducerOutcome:
     session_id: str
     turn_id: int
-    dialog_request: DialogRenderRequest | None = None
+    dialog_act: DialogAct | None = None
+    spoken_response: str = ''
     discord_update_kind: DiscordUpdateKind = 'none'
     discord_text: str = ''
     create_thread: bool = False

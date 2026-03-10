@@ -1,0 +1,19 @@
+profile_name: qwen35_0_8b
+task: llm
+runner: vllm
+repo_id: Qwen/Qwen3.5-0.8B
+device: cuda:0
+dtype: bfloat16
+context_len: 1024
+gpu_memory_utilization: 0.32
+trust_remote_code: true
+startup_args:
+  - --enforce-eager
+  - --generation-config
+  - vllm
+  - --max-num-seqs
+  - "1"
+expected_languages:
+  - ja
+latency_target_ms: 900
+quality_notes: Qwen3.5 0.8B candidate for low-latency reception experiments on 16GB single-GPU systems.

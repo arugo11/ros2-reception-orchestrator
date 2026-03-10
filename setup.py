@@ -1,4 +1,5 @@
 from glob import glob
+import os
 
 from setuptools import find_packages, setup
 
@@ -13,9 +14,21 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
-        ('share/' + package_name + '/config', glob('config/*')),
+        ('share/' + package_name + '/config', [path for path in glob('config/*') if os.path.isfile(path)]),
+        (
+            'share/' + package_name + '/config/model_profiles/llm',
+            glob('config/model_profiles/llm/*.yaml'),
+        ),
+        (
+            'share/' + package_name + '/config/model_profiles/asr',
+            glob('config/model_profiles/asr/*.yaml'),
+        ),
+        (
+            'share/' + package_name + '/config/model_profiles/tts',
+            glob('config/model_profiles/tts/*.yaml'),
+        ),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'PyYAML>=6.0.1'],
     zip_safe=True,
     maintainer='dev',
     maintainer_email='dev@todo.todo',

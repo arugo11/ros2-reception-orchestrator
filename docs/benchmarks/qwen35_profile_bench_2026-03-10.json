@@ -1,0 +1,517 @@
+{
+  "generated_at_epoch": 1773111021.3187017,
+  "llm_profiles": [
+    {
+      "llm_profile": "qwen35_2b_gguf_q5km",
+      "startup_ready": false,
+      "startup_failure": "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263695274] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100] RuntimeError: Unknown gguf model_type: qwen3_5\u001b[0m",
+      "startup_log_tail": [
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.258642324] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 1090, in run_engine_core\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.258818464] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867) Traceback (most recent call last):\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.258900919] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259056350] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259243730] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]            ^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259440829] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/usr/lib/python3.12/multiprocessing/process.py\", line 314, in _bootstrap\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259538312] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 834, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259773542] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]     super().__init__(\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259792528] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/usr/lib/python3.12/multiprocessing/process.py\", line 108, in run\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.259996319] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 110, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260098851] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 1104, in run_engine_core\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260249954] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260353558] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)     raise e\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260480556] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260625567] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 1090, in run_engine_core\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260702822] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]            ^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260869534] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.260943903] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/executor/abstract.py\", line 103, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261182289] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py\", line 49, in _init_executor\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261200263] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261431536] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)            ^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261446774] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py\", line 337, in load_model\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261639145] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 834, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261718473] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261877451] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)     super().__init__(\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.261943484] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]            ^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262127659] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py\", line 4277, in load_model\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262190377] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/engine/core.py\", line 110, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262362048] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]     self.model = model_loader.load_model(\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262414135] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262612617] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262673241] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]                  ^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262842908] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)            ^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.262910575] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/model_executor/model_loader/gguf_loader.py\", line 337, in load_model\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263099028] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/executor/abstract.py\", line 103, in __init__\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263158639] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263349006] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py\", line 49, in _init_executor\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263430428] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100]   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/model_executor/model_loader/gguf_loader.py\", line 151, in _get_gguf_weights_map\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263599424] [vllm_server_node]: [vllm:stderr] (EngineCore_DP0 pid=738867)   File \"/workspaces/ros2-workspace-template/src/ros2_vllm/.venv_vllm_server/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py\", line 337, in load_model\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111054.263695274] [vllm_server_node]: [vllm:stdout] (EngineCore_DP0 pid=738867) ERROR 03-10 02:50:54 [core.py:1100] RuntimeError: Unknown gguf model_type: qwen3_5\u001b[0m"
+      ],
+      "scenarios": []
+    },
+    {
+      "llm_profile": "qwen35_0_8b",
+      "startup_ready": true,
+      "startup_failure": null,
+      "startup_log_tail": [
+        "[tts_server-5] NVIDIA GeForce RTX 5070 Ti with CUDA capability sm_120 is not compatible with the current PyTorch installation.",
+        "[tts_server-5] The current PyTorch install supports CUDA capabilities sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90.",
+        "[tts_server-5] If you want to use the NVIDIA GeForce RTX 5070 Ti GPU with PyTorch, please check the instructions at https://pytorch.org/get-started/locally/",
+        "[tts_server-5]",
+        "[tts_server-5]   queued_call()",
+        "[tts_server-5] /workspaces/ros2-workspace-template/build/tts_server/tts_server/backends/mms_vits.py:250: RuntimeWarning: CUDA device capability sm_120 is unsupported by the current torch build. Falling back to CPU.",
+        "[tts_server-5]   warnings.warn(",
+        "[tts_server-5]",
+        "Loading weights:   0%|          | 0/396 [00:00<?, ?it/s]",
+        "Loading weights: 100%|██████████| 396/396 [00:00<00:00, 28193.65it/s]",
+        "[asr_streaming_node-1] `torch_dtype` is deprecated! Use `dtype` instead!",
+        "[tts_server-5]",
+        "Loading weights:   0%|          | 0/158 [00:00<?, ?it/s]",
+        "Loading weights: 100%|██████████| 158/158 [00:00<00:00, 103353.09it/s]",
+        "[asr_streaming_node-1] The following generation flags are not valid and may be ignored: ['temperature']. Set `TRANSFORMERS_VERBOSITY=info` for more details.",
+        "[tts_server-5] [INFO] [1773111062.949076952] [tts_server]: TTS warmup complete in 4711.5 ms",
+        "[tts_server-5] [INFO] [1773111062.949355273] [tts_server]: tts_server ready. backend=tts_server.backends.mms_vits:MmsVitsBackend model_id=esnya/japanese_speecht5_tts device=cuda:0",
+        "[reception_orchestrator-6] [INFO] [1773111063.021331725] [reception_orchestrator]: TTS action server is ready: /tts/speak",
+        "[reception_orchestrator-6] [WARN] [1773111063.321564709] [reception_orchestrator]: Waiting for ASR topics /asr/utterances and /asr/speech_events and healthy /asr/get_status.",
+        "[reception_orchestrator-6] [WARN] [1773111063.321908783] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[asr_streaming_node-1] Model loaded: Qwen/Qwen3-ASR-0.6B",
+        "[asr_streaming_node-1] [INFO] [1773111065.811933490] [asr_streaming_node]: ASR model preload complete in 7.62s",
+        "[asr_streaming_node-1] [INFO] [1773111065.834114273] [asr_streaming_node]: Loaded model/runtime config from: /workspaces/ros2-workspace-template/install/asr_streaming_node/share/asr_streaming_node/config/config.yaml",
+        "[asr_streaming_node-1] [INFO] [1773111065.834383216] [asr_streaming_node]: ASR runtime: source=Qwen/Qwen3-ASR-0.6B device=cuda:0 compute_type=int8_float16 beam_size=2 internal_vad_filter=False",
+        "[asr_streaming_node-1] [INFO] [1773111065.834619338] [asr_streaming_node]: ASR Streaming Node initialized",
+        "[asr_streaming_node-1] [INFO] [1773111065.834854027] [asr_streaming_node]: Continuous ASR mode enabled",
+        "[reception_orchestrator-6] [INFO] [1773111066.621282538] [reception_orchestrator]: ASR utterance streams are ready",
+        "[reception_orchestrator-6] [WARN] [1773111068.321515962] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111073.321663556] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111078.421584396] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111083.521327546] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111088.521387150] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111093.521464058] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111097.919091377] [vllm_server_node]: [vllm:stderr] (APIServer pid=739172) INFO:     Started server process [739172]\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111097.919346805] [vllm_server_node]: [vllm:stderr] (APIServer pid=739172) INFO:     Waiting for application startup.\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111098.160647415] [vllm_server_node]: [vllm:stderr] (APIServer pid=739172) INFO:     Application startup complete.\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111098.274941035] [vllm_server_node]: vLLM server ready for model Qwen/Qwen3.5-0.8B\u001b[0m",
+        "[llm_chat_node-3] \u001b[0m[INFO] [1773111098.275102017] [llm_chat_node]: vLLM backend ready: Qwen/Qwen3.5-0.8B\u001b[0m",
+        "[reception_orchestrator-6] [INFO] [1773111098.321338933] [reception_orchestrator]: LLM action server is ready: /llm/chat",
+        "[reception_orchestrator-6] [INFO] [1773111098.321660105] [reception_orchestrator]: All backends ready: ASR, LLM, TTS, and chat bridge are available"
+      ],
+      "scenarios": [
+        {
+          "scenario": "reception_happy_path",
+          "passed": false,
+          "failures": [
+            "expected phase=notified_waiting, got collecting",
+            "expected visitor_info.name=島中, got None",
+            "expected visitor_info.affiliation=菅谷研究室, got None",
+            "expected visitor_info.purpose=学長に会いに来ました, got None",
+            "turn 1 missing tts_started_latency_ms",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 3 missing tts_started_latency_ms",
+            "turn 4 missing tts_started_latency_ms",
+            "missing required event tts_started"
+          ],
+          "turn_count": 4,
+          "last_session_state": {
+            "session": {
+              "session_id": "bfebad90ace947c1b8800c5a43e45d6c",
+              "started_at": "2026-03-10 02:51:40.321164+00:00",
+              "last_activity_at": "2026-03-10 02:51:45.021143+00:00",
+              "phase": "collecting",
+              "visitor_info": {
+                "name": null,
+                "affiliation": null,
+                "purpose": null
+              },
+              "last_user_utterance": "はい",
+              "last_dialog_act": null,
+              "pending_confirmation": null,
+              "discord": {
+                "requested": false,
+                "thread_id": null,
+                "channel_id": null,
+                "last_post_hash": null,
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "user:はい"
+              ],
+              "latest_turn_id": 4,
+              "latest_spoken_turn_id": 0,
+              "last_spoken_text": "",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 12071 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 13593 MiB, 16303 MiB"
+        },
+        {
+          "scenario": "reception_correction",
+          "passed": false,
+          "failures": [
+            "expected phase=notified_waiting, got collecting",
+            "expected visitor_info.name=島中, got None",
+            "expected visitor_info.affiliation=菅谷研究室, got None",
+            "expected visitor_info.purpose=学長に会いに来ました, got None",
+            "turn 1 missing tts_started_latency_ms",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 3 missing tts_started_latency_ms",
+            "turn 4 missing tts_started_latency_ms",
+            "turn 5 missing tts_started_latency_ms",
+            "turn 6 missing tts_started_latency_ms",
+            "missing required event tts_started"
+          ],
+          "turn_count": 6,
+          "last_session_state": {
+            "session": {
+              "session_id": "bfebad90ace947c1b8800c5a43e45d6c",
+              "started_at": "2026-03-10 02:51:40.321164+00:00",
+              "last_activity_at": "2026-03-10 02:51:59.421186+00:00",
+              "phase": "collecting",
+              "visitor_info": {
+                "name": null,
+                "affiliation": null,
+                "purpose": null
+              },
+              "last_user_utterance": "はい",
+              "last_dialog_act": null,
+              "pending_confirmation": null,
+              "discord": {
+                "requested": false,
+                "thread_id": null,
+                "channel_id": null,
+                "last_post_hash": null,
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "user:はい",
+                "user:こんにちは",
+                "user:私の名前は下中です",
+                "user:名前が違います。島中です",
+                "user:菅谷研究室に所属しています",
+                "user:学長に会いに来ました",
+                "user:はい"
+              ],
+              "latest_turn_id": 10,
+              "latest_spoken_turn_id": 0,
+              "last_spoken_text": "",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 13618 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 9556 MiB, 16303 MiB"
+        },
+        {
+          "scenario": "reception_overlap",
+          "passed": false,
+          "failures": [
+            "expected phase=notified_waiting, got collecting",
+            "expected visitor_info.name=島中, got None",
+            "expected visitor_info.affiliation=菅谷研究室, got None",
+            "expected visitor_info.purpose=学長に会いに来ました, got None",
+            "turn 1 missing tts_started_latency_ms",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 3 missing tts_started_latency_ms",
+            "turn 4 tts_started_latency_ms=4710.5 exceeds 4000",
+            "missing required event pending_response_collapsed"
+          ],
+          "turn_count": 4,
+          "last_session_state": {
+            "session": {
+              "session_id": "bfebad90ace947c1b8800c5a43e45d6c",
+              "started_at": "2026-03-10 02:51:40.321164+00:00",
+              "last_activity_at": "2026-03-10 02:52:10.131888+00:00",
+              "phase": "collecting",
+              "visitor_info": {
+                "name": null,
+                "affiliation": null,
+                "purpose": null
+              },
+              "last_user_utterance": "こんにちは 私の名前は島中です 菅谷研究室に所属しており、学長に会いに来ました はい",
+              "last_dialog_act": "ask_name",
+              "pending_confirmation": null,
+              "discord": {
+                "requested": false,
+                "thread_id": null,
+                "channel_id": null,
+                "last_post_hash": null,
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "user:はい",
+                "user:こんにちは",
+                "user:私の名前は下中です",
+                "user:名前が違います。島中です",
+                "user:菅谷研究室に所属しています",
+                "user:学長に会いに来ました",
+                "user:はい",
+                "assistant:ask_name:恐れ入ります。お名前を伺ってもよろしいでしょうか。",
+                "user:こんにちは 私の名前は島中です 菅谷研究室に所属しており、学長に会いに来ました はい",
+                "assistant:ask_name:恐れ入ります。お名前を伺ってもよろしいでしょうか。"
+              ],
+              "latest_turn_id": 11,
+              "latest_spoken_turn_id": 11,
+              "last_spoken_text": "恐れ入ります。お名前を伺ってもよろしいでしょうか。",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [
+            4710.5
+          ],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 9554 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 9557 MiB, 16303 MiB"
+        }
+      ]
+    },
+    {
+      "llm_profile": "reception_default",
+      "startup_ready": true,
+      "startup_failure": null,
+      "startup_log_tail": [
+        "[tts_server-5]     https://pytorch.org/get-started/locally/",
+        "[tts_server-5]",
+        "[tts_server-5]   queued_call()",
+        "[tts_server-5] /home/dev/.local/lib/python3.12/site-packages/torch/cuda/__init__.py:435: UserWarning:",
+        "[tts_server-5] NVIDIA GeForce RTX 5070 Ti with CUDA capability sm_120 is not compatible with the current PyTorch installation.",
+        "[tts_server-5] The current PyTorch install supports CUDA capabilities sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90.",
+        "[tts_server-5] If you want to use the NVIDIA GeForce RTX 5070 Ti GPU with PyTorch, please check the instructions at https://pytorch.org/get-started/locally/",
+        "[tts_server-5]",
+        "[tts_server-5]   queued_call()",
+        "[tts_server-5] /workspaces/ros2-workspace-template/build/tts_server/tts_server/backends/mms_vits.py:250: RuntimeWarning: CUDA device capability sm_120 is unsupported by the current torch build. Falling back to CPU.",
+        "[tts_server-5]   warnings.warn(",
+        "[tts_server-5]",
+        "Loading weights:   0%|          | 0/396 [00:00<?, ?it/s]",
+        "Loading weights: 100%|██████████| 396/396 [00:00<00:00, 27823.84it/s]",
+        "[asr_streaming_node-1] `torch_dtype` is deprecated! Use `dtype` instead!",
+        "[tts_server-5]",
+        "Loading weights:   0%|          | 0/158 [00:00<?, ?it/s]",
+        "Loading weights: 100%|██████████| 158/158 [00:00<00:00, 56251.59it/s]",
+        "[asr_streaming_node-1] The following generation flags are not valid and may be ignored: ['temperature']. Set `TRANSFORMERS_VERBOSITY=info` for more details.",
+        "[tts_server-5] [INFO] [1773111148.361240878] [tts_server]: TTS warmup complete in 4833.2 ms",
+        "[tts_server-5] [INFO] [1773111148.361503750] [tts_server]: tts_server ready. backend=tts_server.backends.mms_vits:MmsVitsBackend model_id=esnya/japanese_speecht5_tts device=cuda:0",
+        "[reception_orchestrator-6] [INFO] [1773111148.435888801] [reception_orchestrator]: TTS action server is ready: /tts/speak",
+        "[reception_orchestrator-6] [WARN] [1773111148.635950352] [reception_orchestrator]: Waiting for ASR topics /asr/utterances and /asr/speech_events and healthy /asr/get_status.",
+        "[reception_orchestrator-6] [WARN] [1773111148.636155936] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[asr_streaming_node-1] Model loaded: Qwen/Qwen3-ASR-0.6B",
+        "[asr_streaming_node-1] [INFO] [1773111151.063164833] [asr_streaming_node]: ASR model preload complete in 7.59s",
+        "[asr_streaming_node-1] [INFO] [1773111151.085369411] [asr_streaming_node]: Loaded model/runtime config from: /workspaces/ros2-workspace-template/install/asr_streaming_node/share/asr_streaming_node/config/config.yaml",
+        "[asr_streaming_node-1] [INFO] [1773111151.085639176] [asr_streaming_node]: ASR runtime: source=Qwen/Qwen3-ASR-0.6B device=cuda:0 compute_type=int8_float16 beam_size=2 internal_vad_filter=False",
+        "[asr_streaming_node-1] [INFO] [1773111151.085874576] [asr_streaming_node]: ASR Streaming Node initialized",
+        "[asr_streaming_node-1] [INFO] [1773111151.086106631] [asr_streaming_node]: Continuous ASR mode enabled",
+        "[reception_orchestrator-6] [INFO] [1773111151.935920686] [reception_orchestrator]: ASR utterance streams are ready",
+        "[reception_orchestrator-6] [WARN] [1773111153.635943836] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[reception_orchestrator-6] [WARN] [1773111158.636012412] [reception_orchestrator]: Waiting for LLM action server /llm/chat and backend READY state on /llm/status.",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111160.692135532] [vllm_server_node]: [vllm:stderr] (APIServer pid=740042) INFO:     Started server process [740042]\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111160.692386331] [vllm_server_node]: [vllm:stderr] (APIServer pid=740042) INFO:     Waiting for application startup.\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111160.939183543] [vllm_server_node]: [vllm:stderr] (APIServer pid=740042) INFO:     Application startup complete.\u001b[0m",
+        "[llm_chat_node-3] \u001b[0m[INFO] [1773111161.530911304] [llm_chat_node]: vLLM backend ready: Qwen/Qwen2.5-1.5B-Instruct\u001b[0m",
+        "[vllm_server_node-2] \u001b[0m[INFO] [1773111161.530920321] [vllm_server_node]: vLLM server ready for model Qwen/Qwen2.5-1.5B-Instruct\u001b[0m",
+        "[reception_orchestrator-6] [INFO] [1773111161.535806027] [reception_orchestrator]: LLM action server is ready: /llm/chat",
+        "[reception_orchestrator-6] [INFO] [1773111161.535979011] [reception_orchestrator]: All backends ready: ASR, LLM, TTS, and chat bridge are available"
+      ],
+      "scenarios": [
+        {
+          "scenario": "reception_happy_path",
+          "passed": false,
+          "failures": [
+            "expected visitor_info.name=島中, got 菅谷",
+            "expected visitor_info.affiliation=菅谷研究室, got 研究室",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 4 missing tts_started_latency_ms"
+          ],
+          "turn_count": 4,
+          "last_session_state": {
+            "session": {
+              "session_id": "5d5c0aa36dfb45658f4e8a41f8dd413d",
+              "started_at": "2026-03-10 02:52:43.535615+00:00",
+              "last_activity_at": "2026-03-10 02:52:49.263945+00:00",
+              "phase": "notified_waiting",
+              "visitor_info": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "last_user_utterance": "はい",
+              "last_dialog_act": "confirm",
+              "pending_confirmation": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "discord": {
+                "requested": true,
+                "thread_id": "discord:1479886028549525678:1479886034840846499:1480760290965458966",
+                "channel_id": "discord:1479886028549525678:1479886034840846499",
+                "last_post_hash": "6e743bce80d906e8a4d9cc037a0348a1a07254d14ff1ec327b25f3205c70757e",
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "assistant:ask_name:こんにちは、学長に会いに来られましたか？お名前を教えていただけますか？",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "assistant:confirm:お名前は菅谷、ご所属は研究室、ご用件は学長に会いに来ましたでお間違いないでしょうか。",
+                "user:はい"
+              ],
+              "latest_turn_id": 4,
+              "latest_spoken_turn_id": 3,
+              "last_spoken_text": "お名前は菅谷、ご所属は研究室、ご用件は学長に会いに来ましたでお間違いないでしょうか。",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [
+            2105.0,
+            1983.3
+          ],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 9498 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 9643 MiB, 16303 MiB"
+        },
+        {
+          "scenario": "reception_correction",
+          "passed": false,
+          "failures": [
+            "expected visitor_info.name=島中, got 菅谷",
+            "expected visitor_info.affiliation=菅谷研究室, got 研究室",
+            "turn 1 missing tts_started_latency_ms",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 3 missing tts_started_latency_ms",
+            "turn 5 missing tts_started_latency_ms",
+            "turn 6 missing tts_started_latency_ms"
+          ],
+          "turn_count": 6,
+          "last_session_state": {
+            "session": {
+              "session_id": "5d5c0aa36dfb45658f4e8a41f8dd413d",
+              "started_at": "2026-03-10 02:52:43.535615+00:00",
+              "last_activity_at": "2026-03-10 02:53:03.522422+00:00",
+              "phase": "notified_waiting",
+              "visitor_info": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "last_user_utterance": "はい",
+              "last_dialog_act": "acknowledge_waiting",
+              "pending_confirmation": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "discord": {
+                "requested": true,
+                "thread_id": "discord:1479886028549525678:1479886034840846499:1480760290965458966",
+                "channel_id": "discord:1479886028549525678:1479886034840846499",
+                "last_post_hash": "6e743bce80d906e8a4d9cc037a0348a1a07254d14ff1ec327b25f3205c70757e",
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "assistant:ask_name:こんにちは、学長に会いに来られましたか？お名前を教えていただけますか？",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "assistant:confirm:お名前は菅谷、ご所属は研究室、ご用件は学長に会いに来ましたでお間違いないでしょうか。",
+                "user:はい",
+                "user:私の名前は下中です",
+                "user:名前が違います。島中です",
+                "user:菅谷研究室に所属しています",
+                "assistant:acknowledge_waiting:承知しました。担当者への連絡は継続しておりますので、少々お待ちください。",
+                "user:学長に会いに来ました",
+                "user:はい"
+              ],
+              "latest_turn_id": 9,
+              "latest_spoken_turn_id": 7,
+              "last_spoken_text": "承知しました。担当者への連絡は継続しておりますので、少々お待ちください。",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [
+            2476.9
+          ],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 9647 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 9501 MiB, 16303 MiB"
+        },
+        {
+          "scenario": "reception_overlap",
+          "passed": false,
+          "failures": [
+            "expected visitor_info.name=島中, got 菅谷",
+            "expected visitor_info.affiliation=菅谷研究室, got 研究室",
+            "turn 1 missing tts_started_latency_ms",
+            "turn 2 missing tts_started_latency_ms",
+            "turn 3 missing tts_started_latency_ms"
+          ],
+          "turn_count": 4,
+          "last_session_state": {
+            "session": {
+              "session_id": "5d5c0aa36dfb45658f4e8a41f8dd413d",
+              "started_at": "2026-03-10 02:52:43.535615+00:00",
+              "last_activity_at": "2026-03-10 02:53:11.354769+00:00",
+              "phase": "notified_waiting",
+              "visitor_info": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "last_user_utterance": "こんにちは 私の名前は島中です 菅谷研究室に所属しており、学長に会いに来ました はい",
+              "last_dialog_act": "acknowledge_waiting",
+              "pending_confirmation": {
+                "name": "菅谷",
+                "affiliation": "研究室",
+                "purpose": "学長に会いに来ました"
+              },
+              "discord": {
+                "requested": true,
+                "thread_id": "discord:1479886028549525678:1479886034840846499:1480760290965458966",
+                "channel_id": "discord:1479886028549525678:1479886034840846499",
+                "last_post_hash": "6e743bce80d906e8a4d9cc037a0348a1a07254d14ff1ec327b25f3205c70757e",
+                "confirmed_posted": false
+              },
+              "recent_events": [
+                "user:こんにちは",
+                "assistant:ask_name:こんにちは、学長に会いに来られましたか？お名前を教えていただけますか？",
+                "user:私の名前は島中です",
+                "user:菅谷研究室に所属しており、学長に会いに来ました",
+                "assistant:confirm:お名前は菅谷、ご所属は研究室、ご用件は学長に会いに来ましたでお間違いないでしょうか。",
+                "user:はい",
+                "user:私の名前は下中です",
+                "user:名前が違います。島中です",
+                "user:菅谷研究室に所属しています",
+                "assistant:acknowledge_waiting:承知しました。担当者への連絡は継続しておりますので、少々お待ちください。",
+                "user:学長に会いに来ました",
+                "user:はい",
+                "user:こんにちは 私の名前は島中です 菅谷研究室に所属しており、学長に会いに来ました はい",
+                "assistant:acknowledge_waiting:承知しました。担当者への連絡は継続しておりますので、少々お待ちください。"
+              ],
+              "latest_turn_id": 10,
+              "latest_spoken_turn_id": 10,
+              "last_spoken_text": "承知しました。担当者への連絡は継続しておりますので、少々お待ちください。",
+              "secretary_replied": false
+            }
+          },
+          "tts_started_latency_ms": [
+            2618.8
+          ],
+          "gpu_before": "NVIDIA GeForce RTX 5070 Ti, 9501 MiB, 16303 MiB",
+          "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 9510 MiB, 16303 MiB"
+        }
+      ]
+    }
+  ],
+  "asr_profile": "qwen3_asr_gpu",
+  "tts_profile": "speecht5_gpu",
+  "scenarios": [
+    "/workspaces/ros2-workspace-template/src/ros2_reception_orchestrator/tools/scenarios/reception_happy_path.json",
+    "/workspaces/ros2-workspace-template/src/ros2_reception_orchestrator/tools/scenarios/reception_correction.json",
+    "/workspaces/ros2-workspace-template/src/ros2_reception_orchestrator/tools/scenarios/reception_overlap.json"
+  ]
+}

@@ -1,0 +1,16 @@
+profile_name: kotoba_whisper_gpu
+task: asr
+runner: custom_python
+repo_id: kotoba-tech/kotoba-whisper-v2.0
+backend: whisper
+device: cuda:0
+dtype: auto
+context_len: 0
+memory_budget_mb: 3072
+trust_remote_code: false
+startup_args: []
+require_gpu: true
+expected_languages:
+  - ja
+latency_target_ms: 1400
+quality_notes: Comparison profile using faster-whisper compatible Kotoba Whisper CT2 weights.

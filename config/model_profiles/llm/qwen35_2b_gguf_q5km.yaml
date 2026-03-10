@@ -1,0 +1,26 @@
+profile_name: qwen35_2b_gguf_q5km
+task: llm
+runner: vllm
+repo_id: unsloth/Qwen3.5-2B-GGUF:Q5_K_M
+base_model_id: Qwen/Qwen3.5-2B
+quantization: Q5_K_M
+experimental: true
+device: cuda:0
+dtype: float16
+context_len: 1024
+gpu_memory_utilization: 0.28
+trust_remote_code: false
+startup_args:
+  - --tokenizer
+  - Qwen/Qwen3.5-2B
+  - --hf-config-path
+  - Qwen/Qwen3.5-2B
+  - --enforce-eager
+  - --generation-config
+  - vllm
+  - --max-num-seqs
+  - "1"
+expected_languages:
+  - ja
+latency_target_ms: 1200
+quality_notes: Experimental GGUF profile using Unsloth Q5_K_M quantization for 16GB single-GPU reception tests. Prefer vLLM over Transformers for serving; validate quality carefully before promotion.

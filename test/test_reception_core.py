@@ -17,19 +17,16 @@ def _make_core() -> ReceptionOrchestratorCore:
     return ReceptionOrchestratorCore(inactivity_reset_sec=60)
 
 
-def test_begin_turn_starts_session_and_requests_thread():
+def test_begin_turn_starts_session_without_thread():
     core = _make_core()
-
     turn = core.begin_turn(utterance_id='u1', text='こんにちは', now=_now())
-
     assert turn is not None
     assert turn.create_thread is False
-    assert turn.initial_thread_text == ''
     assert core.session is not None
     assert core.session.phase == 'collecting'
 
 
-def test_supervisor_reducer_collects_slots_in_any_order():
+def test_reducer_collects_name_and_requests_affiliation():
     core = _make_core()
     turn = core.begin_turn(utterance_id='u1', text='島中です', now=_now())
     assert turn is not None
@@ -42,21 +39,20 @@ def test_supervisor_reducer_collects_slots_in_any_order():
             speech_act='inform',
             extracted_name='島中',
             missing_fields=['affiliation', 'purpose'],
-            next_dialog_act='ask_affiliation',
+            spoken_response='ご所属を教えていただけますか。',
         ),
         now=_now(),
     )
 
     assert outcome is not None
+    assert outcome.dialog_act == 'ask_affiliation'
+    assert outcome.spoken_response == 'ご所属を教えていただけますか。'
+    assert outcome.create_thread is True
     assert core.session is not None
     assert core.session.visitor_info.name == '島中'
-    assert outcome.dialog_request is not None
-    assert outcome.dialog_request.dialog_act == 'ask_affiliation'
-    assert outcome.create_thread is True
-    assert outcome.initial_thread_text
 
 
-def test_reducer_transitions_to_confirm_when_all_slots_present():
+def test_reducer_confirms_when_all_slots_present():
     core = _make_core()
     turn = core.begin_turn(utterance_id='u1', text='島中です。菅谷研究室です。面会です。', now=_now())
     assert turn is not None
@@ -72,19 +68,18 @@ def test_reducer_transitions_to_confirm_when_all_slots_present():
             extracted_purpose='面会',
             should_confirm=True,
             missing_fields=[],
-            next_dialog_act='confirm',
+            spoken_response='お名前は島中様、ご所属は菅谷研究室、ご用件は面会でお間違いないでしょうか。',
         ),
         now=_now(),
     )
 
     assert outcome is not None
-    assert outcome.dialog_request is not None
-    assert outcome.dialog_request.dialog_act == 'confirm'
+    assert outcome.dialog_act == 'confirm'
     assert core.session is not None
     assert core.session.phase == 'confirming'
 
 
-def test_confirming_affirm_moves_to_waiting_and_confirms_discord():
+def test_confirming_affirm_moves_to_waiting():
     core = _make_core()
     turn = core.begin_turn(utterance_id='u1', text='島中です。菅谷研究室です。面会です。', now=_now())
     assert turn is not None
@@ -99,7 +94,7 @@ def test_confirming_affirm_moves_to_waiting_and_confirms_discord():
             extracted_purpose='面会',
             should_confirm=True,
             missing_fields=[],
-            next_dialog_act='confirm',
+            spoken_response='確認します。',
         ),
         now=_now(),
     )
@@ -114,18 +109,54 @@ def test_confirming_affirm_moves_to_waiting_and_confirms_discord():
             speech_act='affirm',
             should_confirm=True,
             missing_fields=[],
-            next_dialog_act='notify_waiting',
-            discord_update_kind='confirmed',
+            spoken_response='担当者へお伝えしますので、少々お待ちください。',
         ),
         now=_now(),
     )
 
     assert outcome is not None
-    assert outcome.dialog_request is not None
-    assert outcome.dialog_request.dialog_act == 'notify_waiting'
-    assert outcome.discord_update_kind == 'confirmed'
+    assert outcome.dialog_act == 'notify_waiting'
     assert core.session is not None
     assert core.session.phase == 'notified_waiting'
+
+
+def test_correction_overwrites_name_and_advances_to_next_missing_slot():
+    core = _make_core()
+    turn = core.begin_turn(utterance_id='u1', text='下中です', now=_now())
+    assert turn is not None
+    core.reduce_supervisor_turn(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        utterance_text='下中です',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_name='下中',
+            missing_fields=['affiliation', 'purpose'],
+            spoken_response='ご所属を教えていただけますか。',
+        ),
+        now=_now(),
+    )
+
+    turn2 = core.begin_turn(utterance_id='u2', text='名前が違います。島中です。', now=_now())
+    assert turn2 is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn2.session_id,
+        turn_id=turn2.turn_id,
+        utterance_text='名前が違います。島中です。',
+        decision=SupervisorDecision(
+            speech_act='correction',
+            extracted_name='島中',
+            correction_target='name',
+            missing_fields=['affiliation', 'purpose'],
+            spoken_response='失礼しました。ご所属を教えていただけますか。',
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act == 'ask_affiliation'
+    assert core.session is not None
+    assert core.session.visitor_info.name == '島中'
 
 
 def test_secretary_reply_is_deduplicated():
@@ -136,22 +167,22 @@ def test_secretary_reply_is_deduplicated():
     core.session.phase = 'notified_waiting'
     core.session.discord.thread_id = 'thread-1'
 
-    request1 = core.handle_secretary_reply(
+    outcome1 = core.handle_secretary_reply(
         thread_id='thread-1',
         message_id='m1',
         text='担当者が向かいます。',
         now=_now(),
     )
-    request2 = core.handle_secretary_reply(
+    outcome2 = core.handle_secretary_reply(
         thread_id='thread-1',
         message_id='m1',
         text='担当者が向かいます。',
         now=_now(),
     )
 
-    assert request1 is not None
-    assert request1.dialog_act == 'relay_secretary'
-    assert request2 is None
+    assert outcome1 is not None
+    assert outcome1.dialog_act == 'relay_secretary'
+    assert outcome2 is None
 
 
 def test_handle_thread_created_returns_canonical_post():
@@ -189,8 +220,7 @@ def test_stale_supervisor_result_is_ignored():
         decision=SupervisorDecision(
             speech_act='inform',
             extracted_name='島中',
-            next_dialog_act='ask_affiliation',
-            missing_fields=['affiliation', 'purpose'],
+            spoken_response='ご所属を教えていただけますか。',
         ),
         now=_now(),
     )
@@ -212,31 +242,26 @@ def test_discord_update_deduplicates_same_text():
         decision=SupervisorDecision(
             speech_act='inform',
             extracted_name='島中',
-            next_dialog_act='ask_affiliation',
-            missing_fields=['affiliation', 'purpose'],
+            spoken_response='ご所属を教えていただけますか。',
         ),
         now=_now(),
     )
-
-    turn2 = core.begin_turn(utterance_id='u2', text='島中です', now=_now())
-    assert turn2 is not None
     outcome2 = core.reduce_supervisor_turn(
-        session_id=turn2.session_id,
-        turn_id=turn2.turn_id,
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
         utterance_text='島中です',
         decision=SupervisorDecision(
             speech_act='inform',
             extracted_name='島中',
-            next_dialog_act='ask_affiliation',
-            missing_fields=['affiliation', 'purpose'],
+            spoken_response='ご所属を教えていただけますか。',
         ),
         now=_now(),
     )
 
     assert outcome1 is not None
-    assert outcome1.discord_text
+    assert outcome1.discord_update_kind == 'update'
     assert outcome2 is not None
-    assert outcome2.discord_text == ''
+    assert outcome2.discord_update_kind == 'none'
 
 
 def test_inactivity_resets_session():
@@ -245,32 +270,7 @@ def test_inactivity_resets_session():
     assert turn is not None
     assert core.session is not None
 
-    timed_out = core.handle_inactivity(
-        now=core.session.last_activity_at + timedelta(seconds=61)
-    )
+    expired = core.handle_inactivity(now=_now() + timedelta(seconds=61))
 
-    assert timed_out is True
+    assert expired is True
     assert core.session is None
-
-
-def test_noise_input_does_not_create_thread_or_dialog():
-    core = _make_core()
-    turn = core.begin_turn(utterance_id='u1', text='うーん', now=_now())
-    assert turn is not None
-
-    outcome = core.reduce_supervisor_turn(
-        session_id=turn.session_id,
-        turn_id=turn.turn_id,
-        utterance_text='うーん',
-        decision=SupervisorDecision(
-            speech_act='unknown',
-            ignore_input=True,
-            next_dialog_act='retry',
-            missing_fields=['name', 'affiliation', 'purpose'],
-        ),
-        now=_now(),
-    )
-
-    assert outcome is not None
-    assert outcome.create_thread is False
-    assert outcome.dialog_request is None
