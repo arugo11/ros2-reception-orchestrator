@@ -46,7 +46,7 @@ def test_reducer_collects_name_and_requests_affiliation():
 
     assert outcome is not None
     assert outcome.dialog_act == 'ask_affiliation'
-    assert outcome.spoken_response == 'ご所属を教えていただけますか。'
+    assert outcome.spoken_response == '島中さん、ご所属を教えていただけますか。'
     assert outcome.create_thread is True
     assert core.session is not None
     assert core.session.visitor_info.name == '島中'
@@ -116,6 +116,7 @@ def test_confirming_affirm_moves_to_waiting():
 
     assert outcome is not None
     assert outcome.dialog_act == 'notify_waiting'
+    assert outcome.spoken_response == '担当者へ連絡しました。少々お待ちください。'
     assert core.session is not None
     assert core.session.phase == 'notified_waiting'
 
@@ -155,6 +156,7 @@ def test_correction_overwrites_name_and_advances_to_next_missing_slot():
 
     assert outcome is not None
     assert outcome.dialog_act == 'ask_affiliation'
+    assert outcome.spoken_response == '島中さん、ご所属を教えていただけますか。'
     assert core.session is not None
     assert core.session.visitor_info.name == '島中'
 
@@ -262,6 +264,99 @@ def test_discord_update_deduplicates_same_text():
     assert outcome1.discord_update_kind == 'update'
     assert outcome2 is not None
     assert outcome2.discord_update_kind == 'none'
+
+
+def test_confirming_affirm_ignores_llm_confirm_template():
+    core = _make_core()
+    turn = core.begin_turn(utterance_id='u1', text='島中です。菅谷研究室です。面会です。', now=_now())
+    assert turn is not None
+    core.reduce_supervisor_turn(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        utterance_text='島中です。菅谷研究室です。面会です。',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_name='島中',
+            extracted_affiliation='菅谷研究室',
+            extracted_purpose='面会',
+            should_confirm=True,
+            missing_fields=[],
+            spoken_response='確認します。',
+        ),
+        now=_now(),
+    )
+
+    turn2 = core.begin_turn(utterance_id='u2', text='はい', now=_now())
+    assert turn2 is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn2.session_id,
+        turn_id=turn2.turn_id,
+        utterance_text='はい',
+        decision=SupervisorDecision(
+            speech_act='affirm',
+            should_confirm=True,
+            missing_fields=[],
+            spoken_response='お名前は島中ですね。ご所属は菅谷研究室、ご用件は面会でしょうか。',
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act == 'notify_waiting'
+    assert outcome.spoken_response == '担当者へ連絡しました。少々お待ちください。'
+
+
+def test_notified_waiting_question_does_not_restart_name_prompt():
+    core = _make_core()
+    turn = core.begin_turn(utterance_id='u1', text='島中です。菅谷研究室です。面会です。', now=_now())
+    assert turn is not None
+    core.reduce_supervisor_turn(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        utterance_text='島中です。菅谷研究室です。面会です。',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_name='島中',
+            extracted_affiliation='菅谷研究室',
+            extracted_purpose='面会',
+            should_confirm=True,
+            missing_fields=[],
+            spoken_response='確認します。',
+        ),
+        now=_now(),
+    )
+    turn2 = core.begin_turn(utterance_id='u2', text='はい', now=_now())
+    assert turn2 is not None
+    core.reduce_supervisor_turn(
+        session_id=turn2.session_id,
+        turn_id=turn2.turn_id,
+        utterance_text='はい',
+        decision=SupervisorDecision(
+            speech_act='affirm',
+            should_confirm=True,
+            missing_fields=[],
+            spoken_response='担当者へお伝えします。',
+        ),
+        now=_now(),
+    )
+
+    turn3 = core.begin_turn(utterance_id='u3', text='ここで待っていればいいですか。', now=_now())
+    assert turn3 is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn3.session_id,
+        turn_id=turn3.turn_id,
+        utterance_text='ここで待っていればいいですか。',
+        decision=SupervisorDecision(
+            speech_act='question',
+            missing_fields=[],
+            spoken_response='恐れ入りますが、お名前を伺ってもよろしいでしょうか。',
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act == 'acknowledge_waiting'
+    assert outcome.spoken_response == '承知しました。担当者への連絡は継続しておりますので、少々お待ちください。'
 
 
 def test_inactivity_resets_session():

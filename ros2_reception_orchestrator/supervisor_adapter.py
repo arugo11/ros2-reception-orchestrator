@@ -32,6 +32,43 @@ _VALID_SPEECH_ACTS: set[str] = {
     'unknown',
 }
 _VALID_CORRECTIONS: set[str] = {'none', 'name', 'affiliation', 'purpose', 'all'}
+_AFFILIATION_TOKENS: tuple[str, ...] = (
+    '研究室',
+    '大学',
+    '株式会社',
+    '会社',
+    '学部',
+    '研究所',
+    'センター',
+    '部署',
+    '部',
+    '課',
+    '学校',
+    '法人',
+)
+_PURPOSE_CUES: tuple[str, ...] = (
+    '面会',
+    '打ち合わせ',
+    '訪問',
+    '用件',
+    '用が',
+    '要が',
+    'ようが',
+    '相談',
+    '面談',
+    'アポイント',
+    '会いに',
+    '来ました',
+    'きました',
+    '参りました',
+    'まいりました',
+    'できました',
+    'やってきました',
+    '伺いました',
+    '書類',
+    'の件',
+)
+_GENERIC_AFFILIATIONS: frozenset[str] = frozenset(_AFFILIATION_TOKENS)
 
 
 class SupervisorAdapter:
@@ -185,6 +222,7 @@ class SupervisorAdapter:
 
         rescue_fields = _target_fields_for_slot_rescue(
             snapshot,
+            latest_utterance=latest_utterance,
             speech_act=speech_act,
             slot_confidence=slot_confidence,
             correction_target=correction_target,
@@ -227,6 +265,26 @@ class SupervisorAdapter:
             extracted_affiliation=extracted_affiliation,
             extracted_purpose=extracted_purpose,
         )
+        (
+            extracted_name,
+            extracted_affiliation,
+            extracted_purpose,
+            rejected_fields,
+            recovered_fields,
+        ) = _ground_slot_updates(
+            snapshot,
+            latest_utterance,
+            speech_act=speech_act,
+            extracted_name=extracted_name,
+            extracted_affiliation=extracted_affiliation,
+            extracted_purpose=extracted_purpose,
+        )
+        for field_name in rejected_fields:
+            self._trace(f'slot_rejected field={field_name} utterance={_truncate(latest_utterance, 80)}')
+        for field_name in recovered_fields:
+            self._trace(f'slot_recovered field={field_name} utterance={_truncate(latest_utterance, 80)}')
+        if rejected_fields or recovered_fields:
+            spoken_response = None
 
         changed_fields = _infer_corrected_fields(
             snapshot,
@@ -463,6 +521,7 @@ def _needs_correction_rescue(
 def _target_fields_for_slot_rescue(
     snapshot: SessionSnapshot,
     *,
+    latest_utterance: str,
     speech_act: str,
     slot_confidence: float,
     correction_target: str,
@@ -504,7 +563,11 @@ def _target_fields_for_slot_rescue(
             targets.append('name')
         if not current.affiliation and (not extracted_affiliation or low_confidence):
             targets.append('affiliation')
-        if not current.purpose and (not extracted_purpose or low_confidence):
+        if (
+            not current.purpose
+            and _utterance_has_purpose_cue(latest_utterance)
+            and (not extracted_purpose or low_confidence)
+        ):
             targets.append('purpose')
     return targets
 
@@ -529,3 +592,206 @@ def _is_noninformative_slot_value(text: str) -> bool:
         'はい',
         'いいえ',
     }
+
+
+def _ground_slot_updates(
+    snapshot: SessionSnapshot,
+    latest_utterance: str,
+    *,
+    speech_act: str,
+    extracted_name: str | None,
+    extracted_affiliation: str | None,
+    extracted_purpose: str | None,
+) -> tuple[str | None, str | None, str | None, list[str], list[str]]:
+    rejected_fields: list[str] = []
+    recovered_fields: list[str] = []
+
+    if (
+        extracted_name
+        and extracted_name != snapshot.visitor_info.name
+        and not _is_grounded_name(extracted_name, latest_utterance)
+    ):
+        extracted_name = None
+        rejected_fields.append('name')
+    if (
+        extracted_affiliation
+        and extracted_affiliation != snapshot.visitor_info.affiliation
+        and not _is_grounded_affiliation(extracted_affiliation, latest_utterance)
+    ):
+        extracted_affiliation = None
+        rejected_fields.append('affiliation')
+    if (
+        extracted_purpose
+        and extracted_purpose != snapshot.visitor_info.purpose
+        and not _is_grounded_purpose(extracted_purpose, latest_utterance)
+    ):
+        extracted_purpose = None
+        rejected_fields.append('purpose')
+
+    recovered_name = None
+    if (
+        speech_act in {'inform', 'question', 'unknown', 'greeting', 'correction', 'deny'}
+        and not snapshot.visitor_info.name
+        and not extracted_name
+    ):
+        recovered_name = _extract_self_introduction_name(latest_utterance)
+    if recovered_name:
+        extracted_name = recovered_name
+        recovered_fields.append('name')
+
+    recovered_affiliation = None
+    if not snapshot.visitor_info.affiliation and (
+        not extracted_affiliation or _is_generic_affiliation(extracted_affiliation)
+    ):
+        recovered_affiliation = _extract_grounded_affiliation(latest_utterance)
+    if recovered_affiliation:
+        extracted_affiliation = recovered_affiliation
+        recovered_fields.append('affiliation')
+
+    recovered_purpose = None
+    if not snapshot.visitor_info.purpose and not extracted_purpose:
+        recovered_purpose = _extract_grounded_purpose(latest_utterance)
+    if recovered_purpose:
+        extracted_purpose = recovered_purpose
+        recovered_fields.append('purpose')
+
+    return extracted_name, extracted_affiliation, extracted_purpose, rejected_fields, recovered_fields
+
+
+def _extract_self_introduction_name(latest_utterance: str) -> str | None:
+    candidates = [
+        re.search(r'(?:私の名前は|名前は)([^。、「」\s]{1,12})です', latest_utterance),
+        re.search(r'([^。、「」\s]{1,12})と申します', latest_utterance),
+        re.search(r'([^。、「」\s]{1,12})といいます', latest_utterance),
+        re.search(r'(?:^|[。 、])([^。、「」\s]{1,12})です(?:$|[。 、])', latest_utterance),
+    ]
+    for match in candidates:
+        if match is None:
+            continue
+        name = _optional_string(match.group(1))
+        if name and _looks_like_person_name(name):
+            return name
+    return None
+
+
+def _looks_like_person_name(text: str) -> bool:
+    normalized = _normalize_grounding_text(text)
+    if not normalized or len(normalized) > 8:
+        return False
+    if any(token in text for token in _AFFILIATION_TOKENS):
+        return False
+    if any(token in text for token in _PURPOSE_CUES):
+        return False
+    if any(char.isdigit() for char in normalized):
+        return False
+    return True
+
+
+def _is_grounded_name(candidate: str, latest_utterance: str) -> bool:
+    recovered_name = _extract_self_introduction_name(latest_utterance)
+    if recovered_name is None:
+        return False
+    return _normalize_grounding_text(recovered_name) == _normalize_grounding_text(candidate)
+
+
+def _is_grounded_affiliation(candidate: str, latest_utterance: str) -> bool:
+    if _is_generic_affiliation(candidate):
+        return False
+    if not _candidate_in_utterance(candidate, latest_utterance):
+        return False
+    if any(token in candidate for token in _AFFILIATION_TOKENS):
+        return True
+    normalized_utterance = _normalize_grounding_text(latest_utterance)
+    normalized_candidate = _normalize_grounding_text(candidate)
+    return f'{normalized_candidate}の' in normalized_utterance or '所属' in latest_utterance
+
+
+def _is_grounded_purpose(candidate: str, latest_utterance: str) -> bool:
+    grounded = _extract_grounded_purpose(latest_utterance)
+    if not grounded:
+        return False
+    return _normalize_grounding_text(candidate) == _normalize_grounding_text(grounded)
+
+
+def _extract_grounded_purpose(latest_utterance: str) -> str | None:
+    cleaned = latest_utterance.strip().strip('。！？!?、, ')
+    if not cleaned:
+        return None
+    if not _utterance_has_purpose_cue(cleaned):
+        return None
+    if '所属' in cleaned and not any(token in cleaned for token in ('用件', '用が', '要が', 'ようが', '面会', '打ち合わせ', '相談', '面談', '訪問', 'の件')):
+        return None
+    fragments = [fragment.strip('。！？!?、, ') for fragment in re.split(r'[。！？!?]', cleaned)]
+    fragments = [fragment for fragment in fragments if fragment]
+    for fragment in reversed(fragments):
+        purpose = _match_purpose_fragment(fragment)
+        if purpose:
+            return purpose
+
+    clause_candidates = [fragment.strip('、, ') for fragment in re.split(r'[、,]', cleaned)]
+    for fragment in reversed(clause_candidates):
+        purpose = _match_purpose_fragment(fragment)
+        if purpose:
+            return purpose
+
+    purpose = _match_purpose_fragment(cleaned)
+    if purpose:
+        return purpose
+    return None
+
+
+def _match_purpose_fragment(fragment: str) -> str | None:
+    cleaned = fragment.strip().strip('。！？!?、, ')
+    if not cleaned or not _utterance_has_purpose_cue(cleaned):
+        return None
+    if re.search(r'^(?:私の名前は|名前は)?[^。、「」\s]{1,12}です$', cleaned):
+        return None
+    if re.search(r'.+(?:用件|用が|要が|ようが).*(?:来ました|きました|参りました|まいりました|やってきました)', cleaned):
+        return cleaned
+    if re.search(r'.+(?:面会|打ち合わせ|相談|面談|訪問|アポイント|書類の件|の件).*(?:来ました|きました|参りました|まいりました|やってきました)?', cleaned):
+        return cleaned
+    if re.search(r'.+会いに.*(?:来ました|きました|参りました|まいりました|やってきました)', cleaned):
+        return cleaned
+    return None
+
+
+def _utterance_has_purpose_cue(latest_utterance: str) -> bool:
+    return any(token in latest_utterance for token in _PURPOSE_CUES)
+
+
+def _candidate_in_utterance(candidate: str, latest_utterance: str) -> bool:
+    normalized_candidate = _normalize_grounding_text(candidate)
+    normalized_utterance = _normalize_grounding_text(latest_utterance)
+    return bool(normalized_candidate and normalized_candidate in normalized_utterance)
+
+
+def _normalize_grounding_text(text: str) -> str:
+    normalized = ''.join(text.split())
+    normalized = re.sub(r'[、。,.!！?？「」『』（）()・]', '', normalized)
+    normalized = normalized.lower()
+    for source, target in (
+        ('で来ました', ''),
+        ('で参りました', ''),
+        ('でまいりました', ''),
+        ('できました', ''),
+    ):
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
+def _is_generic_affiliation(candidate: str) -> bool:
+    return _normalize_grounding_text(candidate) in {
+        _normalize_grounding_text(token) for token in _GENERIC_AFFILIATIONS
+    }
+
+
+def _extract_grounded_affiliation(latest_utterance: str) -> str | None:
+    matches: list[str] = []
+    for token in _AFFILIATION_TOKENS:
+        pattern = rf'([^。、「」\s]{{1,20}}{re.escape(token)})'
+        matches.extend(match.group(1) for match in re.finditer(pattern, latest_utterance))
+    for candidate in sorted(matches, key=len, reverse=True):
+        affiliation = _optional_string(candidate)
+        if affiliation and not _is_generic_affiliation(affiliation):
+            return affiliation
+    return None

@@ -1,0 +1,26 @@
+{
+  "gap_sec": 1.0,
+  "turns": [
+    {
+      "text": "私の名前は田中です。総務部に所属していて、打ち合わせで参りました。",
+      "expect_dialog_act": "confirm"
+    },
+    {
+      "text": "はい、お願いします。",
+      "input_mode": "asr_fallback",
+      "alternatives": [
+        "間違いありません。",
+        "その通りです。",
+        "はい、打ち合わせで参りました。"
+      ],
+      "fallback_text": "はい、間違いありません。",
+      "expect_dialog_act": "notify_waiting"
+    }
+  ],
+  "expect": {
+    "name": "田中",
+    "affiliation": "総務部",
+    "purpose": "打ち合わせで参りました",
+    "final_dialog_act": "relay_secretary"
+  }
+}

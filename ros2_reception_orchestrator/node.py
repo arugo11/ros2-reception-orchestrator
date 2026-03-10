@@ -33,8 +33,10 @@ from ros2_vllm_interfaces.msg import LlmStatus
 from tts_msgs.action import Speak
 from tts_msgs.srv import GetStatus as TtsGetStatus
 
+from .dialog_adapter import DialogAdapter
 from .session_manager import ReceptionOrchestratorCore
 from .state_models import DialogAct
+from .state_models import DialogRenderRequest
 from .state_models import SupervisorDecision
 from .state_models import ThreadCreationResult
 from .supervisor_adapter import SupervisorAdapter
@@ -83,6 +85,14 @@ class _TtsCompletedEvent:
     dialog_act: DialogAct
     success: bool
     error_message: str = ''
+
+
+@dataclass(slots=True)
+class _DialogRenderedEvent:
+    session_id: str
+    turn_id: int
+    dialog_act: DialogAct
+    text: str
 
 
 @dataclass(slots=True)
@@ -214,6 +224,11 @@ class ReceptionOrchestratorNode(Node):
             temperature=self._dialog_temperature,
             max_tokens=self._dialog_max_tokens,
             trace=self._trace_pipeline,
+        )
+        self._dialog_adapter = DialogAdapter(
+            self._invoke_llm_chat_action,
+            temperature=self._dialog_temperature,
+            max_tokens=min(self._dialog_max_tokens, 80),
         )
         self._core = ReceptionOrchestratorCore(
             inactivity_reset_sec=self._session_inactivity_reset_sec,
@@ -375,6 +390,9 @@ class ReceptionOrchestratorNode(Node):
         if isinstance(event, _TtsCompletedEvent):
             self._handle_tts_completed_event(event)
             return
+        if isinstance(event, _DialogRenderedEvent):
+            self._handle_dialog_rendered_event(event)
+            return
 
     def _handle_utterance_event(self, event: _UtteranceEvent) -> None:
         now = time.monotonic()
@@ -442,11 +460,11 @@ class ReceptionOrchestratorNode(Node):
         if outcome.discord_text and self._core.session is not None and self._core.session.discord.thread_id:
             self._send_thread_message(self._core.session.discord.thread_id, outcome.discord_text)
         if outcome.dialog_act is not None and outcome.spoken_response:
-            self._enqueue_or_speak_response(
+            self._schedule_dialog_render(
                 session_id=outcome.session_id,
                 turn_id=outcome.turn_id,
                 dialog_act=outcome.dialog_act,
-                text=outcome.spoken_response,
+                fallback_text=outcome.spoken_response,
             )
 
     def _handle_thread_created_event(self, event: _ThreadCreatedEvent) -> None:
@@ -483,6 +501,14 @@ class ReceptionOrchestratorNode(Node):
                 dialog_act=outcome.dialog_act,
                 text=outcome.spoken_response,
             )
+
+    def _handle_dialog_rendered_event(self, event: _DialogRenderedEvent) -> None:
+        self._enqueue_or_speak_response(
+            session_id=event.session_id,
+            turn_id=event.turn_id,
+            dialog_act=event.dialog_act,
+            text=event.text,
+        )
 
     def _handle_tts_completed_event(self, event: _TtsCompletedEvent) -> None:
         self._core.handle_tts_completed(
@@ -589,6 +615,55 @@ class ReceptionOrchestratorNode(Node):
             except Exception as exc:  # noqa: BLE001
                 result.error_message = str(exc)
             self._event_queue.put(_ThreadCreatedEvent(result))
+
+        self._background.submit(_run)
+
+    def _schedule_dialog_render(
+        self,
+        *,
+        session_id: str,
+        turn_id: int,
+        dialog_act: DialogAct,
+        fallback_text: str,
+    ) -> None:
+        session = self._core.session
+        if session is None or session.session_id != session_id:
+            self._event_queue.put(
+                _DialogRenderedEvent(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    dialog_act=dialog_act,
+                    text=fallback_text,
+                )
+            )
+            return
+
+        request = DialogRenderRequest(
+            session_id=session_id,
+            turn_id=turn_id,
+            dialog_act=dialog_act,
+            phase=session.phase,
+            visitor_info=session.visitor_info.copy(),
+            pending_confirmation=(session.pending_confirmation.copy() if session.pending_confirmation else None),
+            secretary_reply_text='',
+            latest_utterance=session.last_user_utterance,
+        )
+
+        def _run() -> None:
+            text = fallback_text
+            try:
+                if dialog_act != 'relay_secretary':
+                    text = self._dialog_adapter.render(request)
+            except Exception:
+                text = fallback_text
+            self._event_queue.put(
+                _DialogRenderedEvent(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    dialog_act=dialog_act,
+                    text=text,
+                )
+            )
 
         self._background.submit(_run)
 
