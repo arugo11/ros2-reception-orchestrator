@@ -258,8 +258,101 @@ def test_supervisor_adapter_slot_rescue_can_clear_hallucinated_missing_slots():
 
     assert decision.extracted_name is None
     assert decision.extracted_affiliation is None
+
+
+def test_supervisor_adapter_recovers_purpose_from_meeting_turn():
+    snapshot = _snapshot()
+    snapshot.visitor_info.name = '嶋中'
+    snapshot.visitor_info.affiliation = '総務部'
+
+    responses = iter(
+        [
+            (
+                '{"speech_act":"inform","slot_updates":{"name":null,"affiliation":null,"purpose":"打ち合わせで参りました"},'
+                '"correction":{"target":"none","overwrite":false},'
+                '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+                '"confidence":0.6,"spoken_response":"承知しました。"}'
+            ),
+        ]
+    )
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return next(responses)
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        snapshot,
+        '学長に会いに来ました。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_purpose == '学長に会いに来ました'
+    assert decision.missing_fields == []
+
+
+def test_supervisor_adapter_strips_self_introduction_from_purpose_slot():
+    snapshot = _snapshot()
+
+    responses = iter(
+        [
+            (
+                '{"speech_act":"inform","slot_updates":{"name":"嶋中","affiliation":null,"purpose":"嶋中です。学長に会いに来ました"},'
+                '"correction":{"target":"none","overwrite":false},'
+                '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+                '"confidence":0.9,"spoken_response":"承知しました。"}'
+            ),
+        ]
+    )
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return next(responses)
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        snapshot,
+        '嶋中です。学長に会いに来ました。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_name == '嶋中'
+    assert decision.extracted_purpose == '学長に会いに来ました'
+    assert decision.missing_fields == ['affiliation']
+
+
+def test_supervisor_adapter_recovers_specific_affiliation_from_generic_suffix():
+    snapshot = _snapshot()
+    snapshot.visitor_info.name = '嶋中'
+
+    responses = iter(
+        [
+            (
+                '{"speech_act":"inform","slot_updates":{"name":null,"affiliation":"研究室","purpose":null},'
+                '"correction":{"target":"none","overwrite":false},'
+                '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+                '"confidence":0.9,"spoken_response":"承知しました。"}'
+            ),
+        ]
+    )
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return next(responses)
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        snapshot,
+        '菅屋研究室です。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_affiliation == '菅屋研究室'
+    assert decision.missing_fields == ['purpose']
     assert decision.extracted_purpose is None
-    assert decision.missing_fields == ['name', 'affiliation', 'purpose']
 
 
 def test_supervisor_adapter_ignores_unrelated_name_overwrite_without_correction():
@@ -422,3 +515,141 @@ def test_supervisor_adapter_confirmation_rescue_promotes_affirm():
 
     assert decision.speech_act == 'affirm'
     assert decision.should_confirm is True
+
+
+def test_supervisor_adapter_rejects_hallucinated_purpose_from_name_only_turn():
+    responses = iter(
+        [
+            (
+                '{"speech_act":"inform","slot_updates":{"name":"田中","affiliation":null,"purpose":"学長に会いに来ました"},'
+                '"correction":{"target":"none","overwrite":false},'
+                '"confirmation":{"ready":true,"accepted":false},"ignore_input":false,'
+                '"confidence":0.92,"spoken_response":"確認します。"}'
+            ),
+            '{"name":"田中","affiliation":null,"purpose":null}',
+        ]
+    )
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return next(responses)
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        _snapshot(),
+        '私の名前は田中です。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_name == '田中'
+    assert decision.extracted_affiliation is None
+    assert decision.extracted_purpose is None
+    assert decision.missing_fields == ['affiliation', 'purpose']
+
+
+def test_supervisor_adapter_rejects_hallucinated_affiliation_not_in_utterance():
+    responses = iter(
+        [
+            (
+                '{"speech_act":"inform","slot_updates":{"name":"田中","affiliation":"菅谷研究室","purpose":null},'
+                '"correction":{"target":"none","overwrite":false},'
+                '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+                '"confidence":0.9,"spoken_response":"ご用件を教えていただけますか。"}'
+            ),
+            '{"name":"田中","affiliation":null,"purpose":null}',
+        ]
+    )
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return next(responses)
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        _snapshot(),
+        '私の名前は田中です。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_name == '田中'
+    assert decision.extracted_affiliation is None
+    assert decision.extracted_purpose is None
+    assert decision.missing_fields == ['affiliation', 'purpose']
+
+
+def test_supervisor_adapter_recovers_name_from_explicit_self_introduction():
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return (
+            '{"speech_act":"inform","slot_updates":{"name":null,"affiliation":null,"purpose":null},'
+            '"correction":{"target":"none","overwrite":false},'
+            '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+            '"confidence":0.85,"spoken_response":"ご所属を教えていただけますか。"}'
+        )
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        _snapshot(),
+        '田中と申します。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_name == '田中'
+    assert decision.extracted_affiliation is None
+    assert decision.extracted_purpose is None
+    assert decision.missing_fields == ['affiliation', 'purpose']
+
+
+def test_supervisor_adapter_recovers_purpose_from_you_ga_atte_kimashita():
+    snapshot = _snapshot()
+    snapshot.visitor_info.name = '島中'
+    snapshot.visitor_info.affiliation = '研究室'
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return (
+            '{"speech_act":"inform","slot_updates":{"name":"島中","affiliation":"研究室","purpose":"打ち合わせで参りました"},'
+            '"correction":{"target":"none","overwrite":false},'
+            '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+            '"confidence":0.82,"spoken_response":"ご用件を教えていただけますか。"}'
+        )
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        snapshot,
+        '総務部に要があってきました。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_purpose == '総務部に要があってきました'
+    assert decision.missing_fields == []
+
+
+def test_supervisor_adapter_recovers_purpose_from_asr_variant_youga_yattekimashita():
+    snapshot = _snapshot()
+    snapshot.visitor_info.name = '島中'
+    snapshot.visitor_info.affiliation = '研究室'
+
+    def _invoke(session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema):
+        del session_id, user_message, system_prompt, temperature, max_tokens, stateless, response_json_schema
+        return (
+            '{"speech_act":"inform","slot_updates":{"name":"島中","affiliation":"研究室","purpose":"打ち合わせで参りました"},'
+            '"correction":{"target":"none","overwrite":false},'
+            '"confirmation":{"ready":false,"accepted":false},"ignore_input":false,'
+            '"confidence":0.8,"spoken_response":"ご用件を教えていただけますか。"}'
+        )
+
+    adapter = SupervisorAdapter(_invoke, temperature=0.0, max_tokens=96)
+    decision = adapter.analyze(
+        snapshot,
+        '総務部にようがやってきました。',
+        currently_speaking=False,
+        captured_during_tts=False,
+    )
+
+    assert decision.extracted_purpose == '総務部にようがやってきました'
+    assert decision.missing_fields == []

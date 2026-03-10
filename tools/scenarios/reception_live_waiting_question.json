@@ -1,0 +1,32 @@
+{
+  "gap_sec": 3.0,
+  "turns": [
+    {
+      "text": "嶋中です。",
+      "expect_dialog_act": "ask_affiliation"
+    },
+    {
+      "text": "菅屋研究室です。",
+      "expect_dialog_act": "ask_purpose"
+    },
+    {
+      "text": "学長に会いに来ました。",
+      "expect_dialog_act": "confirm"
+    },
+    {
+      "text": "はい。",
+      "expect_dialog_act": "notify_waiting"
+    },
+    {
+      "text": "ここで待っていればいいですか。",
+      "expect_dialog_act": "acknowledge_waiting"
+    }
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "name": "嶋中",
+    "affiliation": "菅屋研究室",
+    "purpose": "学長に会いに来ました",
+    "last_dialog_act": "acknowledge_waiting"
+  }
+}

@@ -370,6 +370,8 @@ class ReceptionOrchestratorCore:
         changed_fields: list[str],
     ) -> str:
         fallback = fallback_dialog_text(dialog_act, session.visitor_info)
+        if dialog_act != 'relay_secretary':
+            return fallback
         cleaned = (spoken_response or '').strip()
         if not cleaned:
             return fallback

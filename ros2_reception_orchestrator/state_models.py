@@ -147,6 +147,7 @@ class DialogRenderRequest:
     dialog_act: DialogAct
     phase: Phase
     visitor_info: VisitorInfo
+    latest_utterance: str = ''
     pending_confirmation: VisitorInfo | None = None
     secretary_reply_text: str = ''
 

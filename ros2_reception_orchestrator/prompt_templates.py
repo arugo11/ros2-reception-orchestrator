@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from .state_models import DialogRenderRequest
 from .state_models import SessionSnapshot
 
 
@@ -18,17 +19,66 @@ RECEPTION_SYSTEM_PROMPT = (
     '既に埋まっている slot は、最新発話で明示的に訂正された場合だけ slot_updates で上書きできます。'
     '所属や用件を話している発話から name を作り直してはいけません。'
     'unknown, none, null, "-", 不明, 未取得 を slot 値として使ってはいけません。'
-    'purpose は「学長に会いに来ました」のように自己完結した句で返してください。'
+    'purpose は「打ち合わせで参りました」のように自己完結した句で返してください。'
     'spoken_response は来訪者にそのまま話す本文です。1〜2文、丁寧で自然、今必要なことだけを伝えてください。'
     '複数質問、役割説明、内部語は禁止です。'
-    '例: latest_utterance=私の名前は島中です -> slot_updates.name=島中。'
-    '例: latest_utterance=菅谷研究室に所属しており、学長に会いに来ました -> affiliation=菅谷研究室, purpose=学長に会いに来ました。'
+    '例: latest_utterance=私の名前は島中です -> slot_updates.name=島中。affiliation と purpose は null。'
+    '例: latest_utterance=総務部の田中です。打ち合わせで参りました -> affiliation=総務部, purpose=打ち合わせで参りました。'
     '例: latest_utterance=名前が違います。島中です -> correction.target=name, overwrite=true, slot_updates.name=島中。'
+    '例: latest_utterance=所属は情報科学研究室です -> affiliation=情報科学研究室。name と purpose は null。'
     '例: latest_utterance=こんにちは -> slot_updates はすべて null。purpose を推測してはいけません。'
 )
 
 RECEPTION_REPAIR_SYSTEM_PROMPT = (
     '大学受付AIです。必ず1行JSONのみ返してください。説明とMarkdownは禁止です。'
+)
+
+RECEPTION_DIALOG_SYSTEM_PROMPT = (
+    'あなたは大学受付AIの発話生成専用モジュールです。'
+    '入力として渡される dialog_act と確定済み state だけを根拠に、来訪者へ自然で短い日本語を1つ返してください。'
+    '出力は説明なしの1行JSONのみです。必須キーは spoken_response です。'
+    '未取得の値を推測して補ってはいけません。過去の例文や一般知識で名前・所属・用件を作ってはいけません。'
+    'dialog_act に従わない発話は禁止です。たとえば acknowledge_waiting で名前を聞き直してはいけません。'
+    '雑談、挨拶の言い直し、相手の体調確認、感想、共感、世間話は禁止です。'
+    '受付として今必要な1つの行為だけを行ってください。'
+    'ask_name では名前だけを尋ねてください。所属や用件は聞かないでください。'
+    'ask_affiliation では所属だけを尋ねてください。名前や用件は聞かないでください。'
+    'ask_purpose では来訪目的だけを尋ねてください。名前や所属は聞かないでください。'
+    'confirm では current_name/current_affiliation/current_purpose を自然に読み上げて確認してください。'
+    'notify_waiting では担当者へ連絡したことと待機案内だけを伝えてください。'
+    'acknowledge_waiting では待機中の質問や相づちに応じつつ、受付情報の再聴取はしないでください。'
+    'ask_name/ask_affiliation/ask_purpose では不足している項目だけを1つ尋ねてください。'
+    'clarify では聞き取れなかったことだけを短く言い、取り直し対象の項目を1つだけ促してください。'
+    'confirm 以外では、すでに取得済みの全項目をまとめて復唱しないでください。'
+    'confirm では、name/affiliation/purpose の3項目をまとめて確認し、「以上でよろしいでしょうか」のように締めてください。'
+    'notify_waiting では、用件の復唱や再確認はせず、「担当者へ連絡しました。そのままお待ちください」の趣旨だけを述べてください。'
+    'acknowledge_waiting では、待ち場所や待機継続への応答だけを行い、目的の復唱や質問をしてはいけません。'
+    '例: dialog_act=ask_name -> {"spoken_response":"恐れ入りますが、お名前を教えてください。"}'
+    '例: dialog_act=ask_affiliation current_name=島中 -> {"spoken_response":"島中さん、ご所属を教えてください。"}'
+    '例: dialog_act=ask_purpose current_name=島中 current_affiliation=菅屋研究室 -> {"spoken_response":"ご用件を教えてください。"}'
+    '例: dialog_act=confirm current_name=島中 current_affiliation=菅屋研究室 current_purpose=学長に会いに来ました -> {"spoken_response":"島中様、菅屋研究室の方で、学長に会いに来られたとのことです。以上でよろしいでしょうか。"}'
+    '例: dialog_act=notify_waiting -> {"spoken_response":"担当者へ連絡しました。そのまま少々お待ちください。"}'
+    '例: dialog_act=acknowledge_waiting latest_utterance=ここで待てばいいですか -> {"spoken_response":"はい、そのままそこでお待ちください。担当者へ連絡しております。"}'
+    '例: dialog_act=ask_name で {"spoken_response":"こんにちは、何かお困りですか"} は禁止です。'
+    '例: dialog_act=ask_name で {"spoken_response":"お名前、所属、目的を教えてください"} は禁止です。'
+    '例: dialog_act=ask_affiliation で {"spoken_response":"お名前と所属を教えてください"} は禁止です。'
+    '例: dialog_act=confirm で {"spoken_response":"学長に会いに来ました。"} は禁止です。'
+    '例: dialog_act=notify_waiting で {"spoken_response":"はい、学長に会いに来ました。"} は禁止です。'
+    '1〜2文、丁寧で自然、簡潔にしてください。'
+)
+
+RECEPTION_DIALOG_REVIEW_SYSTEM_PROMPT = (
+    'あなたは大学受付AIの応答レビューモジュールです。'
+    '入力として dialog_act、確定済み state、latest_utterance、candidate_response を受け取ります。'
+    'candidate_response が dialog_act と state に整合していれば、多少言い回しがぎこちなくても accept=true を返してください。'
+    'accept=true のとき spoken_response は candidate_response をそのまま返してください。'
+    '不適切な場合だけ accept=false とし、candidate_response を最小限に直した spoken_response を1つ返してください。'
+    '推測禁止。未取得情報を補ってはいけません。雑談、受付業務外の会話、誤った項目の聞き直しは禁止です。'
+    'confirm と relay_secretary 以外では、確定済みの名前・所属・用件をむやみに復唱してはいけません。'
+    'notify_waiting と acknowledge_waiting では、追加質問や情報の再聴取をしてはいけません。'
+    'notify_waiting と acknowledge_waiting では、待機案内と連絡済みの案内だけを行ってください。'
+    'candidate_response が既にその条件を満たしているなら、絶対に内容を作り変えないでください。'
+    '返答は1行JSONのみです。必須キーは accept, spoken_response です。'
 )
 
 RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA = json.dumps(
@@ -154,7 +204,7 @@ def build_reception_correction_rescue_prompt(
             f'target_field={target_field}',
             f'latest_utterance={latest_utterance}',
             '例1: target_field=name, latest_utterance=名前が違います。島中です -> slot_updates.name=島中',
-            '例2: target_field=affiliation, latest_utterance=所属が違います。菅谷研究室です -> slot_updates.affiliation=菅谷研究室',
+            '例2: target_field=affiliation, latest_utterance=所属が違います。情報科学研究室です -> slot_updates.affiliation=情報科学研究室',
             'return={"speech_act":"correction","slot_updates":{"name":null,"affiliation":null,"purpose":null},"correction":{"target":"'
             + target_field
             + '","overwrite":true},"confirmation":{"ready":false,"accepted":false},"ignore_input":false,"confidence":0.0,"spoken_response":"承知しました。"}',
@@ -209,7 +259,58 @@ def build_reception_slot_extract_prompt(
             f'current_purpose={info.purpose or "null"}',
             '返答は1行JSONのみ。',
             '例1: target_fields=name latest_utterance=名前が違います。島中です -> {"name":"島中","affiliation":null,"purpose":null}',
-            '例2: target_fields=affiliation,purpose latest_utterance=菅谷研究室に所属しており、学長に会いに来ました -> {"name":null,"affiliation":"菅谷研究室","purpose":"学長に会いに来ました"}',
+            '例2: target_fields=affiliation,purpose latest_utterance=総務部の田中です。打ち合わせで参りました -> {"name":null,"affiliation":"総務部","purpose":"打ち合わせで参りました"}',
+        ]
+    )
+
+
+def build_reception_dialog_prompt(request: DialogRenderRequest) -> str:
+    info = request.visitor_info
+    pending = request.pending_confirmation or info
+    return '\n'.join(
+        [
+            'input_json=',
+            '{',
+            f'  "dialog_act": {json_string(request.dialog_act)},',
+            f'  "phase": {json_string(request.phase)},',
+            f'  "latest_utterance": {json_string(request.latest_utterance)},',
+            f'  "current_name": {json_string(info.name)},',
+            f'  "current_affiliation": {json_string(info.affiliation)},',
+            f'  "current_purpose": {json_string(info.purpose)},',
+            f'  "pending_name": {json_string(pending.name)},',
+            f'  "pending_affiliation": {json_string(pending.affiliation)},',
+            f'  "pending_purpose": {json_string(pending.purpose)},',
+            f'  "secretary_reply_text": {json_string(request.secretary_reply_text)}',
+            '}',
+            'output_json_example=',
+            '{"spoken_response":"承知しました。担当者への連絡は継続しておりますので、少々お待ちください。"}',
+        ]
+    )
+
+
+def build_reception_dialog_review_prompt(
+    request: DialogRenderRequest,
+    candidate_response: str,
+) -> str:
+    info = request.visitor_info
+    pending = request.pending_confirmation or info
+    return '\n'.join(
+        [
+            'input_json=',
+            '{',
+            f'  "dialog_act": {json_string(request.dialog_act)},',
+            f'  "phase": {json_string(request.phase)},',
+            f'  "latest_utterance": {json_string(request.latest_utterance)},',
+            f'  "current_name": {json_string(info.name)},',
+            f'  "current_affiliation": {json_string(info.affiliation)},',
+            f'  "current_purpose": {json_string(info.purpose)},',
+            f'  "pending_name": {json_string(pending.name)},',
+            f'  "pending_affiliation": {json_string(pending.affiliation)},',
+            f'  "pending_purpose": {json_string(pending.purpose)},',
+            f'  "candidate_response": {json_string(candidate_response)}',
+            '}',
+            'output_json_example=',
+            '{"accept":true,"spoken_response":"はい、そのままそこでお待ちください。担当者へ連絡しております。"}',
         ]
     )
 
@@ -290,6 +391,33 @@ RECEPTION_SLOT_EXTRACT_JSON_SCHEMA = json.dumps(
             "purpose": {"type": ["string", "null"]},
         },
         "required": ["name", "affiliation", "purpose"],
+        "additionalProperties": False,
+    },
+    ensure_ascii=False,
+)
+
+
+RECEPTION_DIALOG_RESPONSE_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "spoken_response": {"type": "string"},
+        },
+        "required": ["spoken_response"],
+        "additionalProperties": False,
+    },
+    ensure_ascii=False,
+)
+
+
+RECEPTION_DIALOG_REVIEW_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "accept": {"type": "boolean"},
+            "spoken_response": {"type": "string"},
+        },
+        "required": ["accept", "spoken_response"],
         "additionalProperties": False,
     },
     ensure_ascii=False,
