@@ -1,0 +1,18 @@
+profile_name: speecht5_gpu
+task: tts
+runner: custom_python
+repo_id: esnya/japanese_speecht5_tts
+backend_class: tts_server.backends.mms_vits:MmsVitsBackend
+device: cuda:0
+dtype: float16
+warmup_enabled: true
+warmup_text: 受付を開始します。
+playback_sample_rate_hz: 16000
+context_len: 0
+memory_budget_mb: 2048
+trust_remote_code: true
+startup_args: []
+expected_languages:
+  - ja
+latency_target_ms: 900
+quality_notes: Lightweight comparison profile using SpeechT5 backend on GPU.

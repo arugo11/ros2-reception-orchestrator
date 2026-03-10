@@ -14,7 +14,6 @@ from .formatters import format_confirmed_post
 from .formatters import format_initial_post
 from .formatters import format_update_post
 from .state_models import DialogAct
-from .state_models import DialogRenderRequest
 from .state_models import DiscordUpdateKind
 from .state_models import ReducerOutcome
 from .state_models import SessionSnapshot
@@ -150,15 +149,6 @@ class ReceptionOrchestratorCore:
             session.phase = 'collecting'
             session.pending_confirmation = None
 
-        dialog_request = DialogRenderRequest(
-            session_id=session.session_id,
-            turn_id=turn_id,
-            dialog_act=dialog_act,
-            phase=session.phase,
-            visitor_info=session.visitor_info.copy(),
-            pending_confirmation=(session.pending_confirmation.copy() if session.pending_confirmation else None),
-        )
-
         discord_text = ''
         if discord_update_kind == 'update' and session.discord.thread_id:
             discord_text = format_update_post(session)
@@ -174,14 +164,20 @@ class ReceptionOrchestratorCore:
         return ReducerOutcome(
             session_id=session.session_id,
             turn_id=turn_id,
-            dialog_request=dialog_request,
+            dialog_act=dialog_act,
+            spoken_response=self._select_spoken_response(
+                session,
+                dialog_act=dialog_act,
+                spoken_response=decision.spoken_response,
+                changed_fields=changed_fields,
+            ),
             discord_update_kind=discord_update_kind,
             discord_text=discord_text,
             create_thread=create_thread,
             initial_thread_text=initial_thread_text,
         )
 
-    def accept_dialog_render(
+    def accept_spoken_response(
         self,
         *,
         session_id: str,
@@ -200,6 +196,7 @@ class ReceptionOrchestratorCore:
         timestamp = now or datetime.now(tz=UTC)
         session.touch(timestamp)
         session.last_dialog_act = dialog_act
+        session.last_spoken_text = cleaned
         session.latest_spoken_turn_id = max(session.latest_spoken_turn_id, turn_id)
         session.recent_events.append(f'assistant:{dialog_act}:{cleaned}')
         self._trim_recent_events(session)
@@ -225,7 +222,7 @@ class ReceptionOrchestratorCore:
         message_id: str,
         text: str,
         now: datetime | None = None,
-    ) -> DialogRenderRequest | None:
+    ) -> ReducerOutcome | None:
         session = self.session
         if session is None:
             return None
@@ -242,14 +239,11 @@ class ReceptionOrchestratorCore:
         session.touch(timestamp)
         session.phase = 'relaying_reply'
         session.latest_turn_id += 1
-        return DialogRenderRequest(
+        return ReducerOutcome(
             session_id=session.session_id,
             turn_id=session.latest_turn_id,
             dialog_act='relay_secretary',
-            phase='relaying_reply',
-            visitor_info=session.visitor_info.copy(),
-            pending_confirmation=(session.pending_confirmation.copy() if session.pending_confirmation else None),
-            secretary_reply_text=text.strip(),
+            spoken_response=text.strip(),
         )
 
     def handle_tts_completed(
@@ -309,6 +303,7 @@ class ReceptionOrchestratorCore:
             visitor_info=session.visitor_info.copy(),
             last_user_utterance=session.last_user_utterance,
             last_dialog_act=session.last_dialog_act,
+            last_spoken_text=session.last_spoken_text,
             pending_confirmation=(session.pending_confirmation.copy() if session.pending_confirmation else None),
             latest_turn_id=session.latest_turn_id,
         )
@@ -346,7 +341,7 @@ class ReceptionOrchestratorCore:
             if decision.correction_target != 'none':
                 if missing_fields:
                     return _dialog_act_for_missing(missing_fields)
-                return 'confirm'
+                return 'ack_correction'
             if decision.speech_act == 'affirm' or decision.should_confirm:
                 return 'notify_waiting'
             if decision.speech_act in {'deny', 'correction', 'complaint'}:
@@ -363,11 +358,26 @@ class ReceptionOrchestratorCore:
                 decision.extracted_purpose,
             )
         ):
-            return 'clarify'
-
-        if decision.next_dialog_act is not None:
-            return decision.next_dialog_act
+            return 'retry'
         return _dialog_act_for_missing(missing_fields)
+
+    def _select_spoken_response(
+        self,
+        session: SessionState,
+        *,
+        dialog_act: DialogAct,
+        spoken_response: str | None,
+        changed_fields: list[str],
+    ) -> str:
+        fallback = fallback_dialog_text(dialog_act, session.visitor_info)
+        cleaned = (spoken_response or '').strip()
+        if not cleaned:
+            return fallback
+        if session.last_spoken_text and cleaned == session.last_spoken_text:
+            return fallback
+        if changed_fields and session.last_spoken_text and cleaned == session.last_spoken_text:
+            return fallback
+        return cleaned
 
     def _is_duplicate_discord_text(self, session: SessionState, text: str) -> bool:
         content_hash = stable_text_hash(text)

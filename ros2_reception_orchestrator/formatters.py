@@ -55,6 +55,8 @@ def format_confirmed_post(session: SessionState) -> str:
 
 
 def fallback_dialog_text(dialog_act: DialogAct, info: VisitorInfo) -> str:
+    if dialog_act == 'greet':
+        return 'こんにちは。ご用件を伺いますので、まずお名前を教えていただけますか。'
     if dialog_act == 'ask_name':
         return '恐れ入ります。お名前を伺ってもよろしいでしょうか。'
     if dialog_act == 'ask_affiliation':
@@ -74,6 +76,10 @@ def fallback_dialog_text(dialog_act: DialogAct, info: VisitorInfo) -> str:
         return '担当者へ連絡しました。少々お待ちください。'
     if dialog_act == 'acknowledge_waiting':
         return '承知しました。担当者への連絡は継続しておりますので、少々お待ちください。'
+    if dialog_act == 'ack_correction':
+        return '失礼しました。内容を反映しました。'
+    if dialog_act == 'close':
+        return 'ありがとうございました。担当者からのご案内をお待ちください。'
     if dialog_act == 'relay_secretary':
         return '担当者からの返信が届きました。'
     if dialog_act == 'clarify':

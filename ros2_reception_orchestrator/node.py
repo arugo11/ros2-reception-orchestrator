@@ -33,10 +33,8 @@ from ros2_vllm_interfaces.msg import LlmStatus
 from tts_msgs.action import Speak
 from tts_msgs.srv import GetStatus as TtsGetStatus
 
-from .dialog_adapter import DialogAdapter
 from .session_manager import ReceptionOrchestratorCore
 from .state_models import DialogAct
-from .state_models import DialogRenderRequest
 from .state_models import SupervisorDecision
 from .state_models import ThreadCreationResult
 from .supervisor_adapter import SupervisorAdapter
@@ -67,14 +65,6 @@ class _SupervisorResultEvent:
 
 
 @dataclass(slots=True)
-class _DialogRenderedEvent:
-    session_id: str
-    turn_id: int
-    dialog_act: DialogAct
-    text: str
-
-
-@dataclass(slots=True)
 class _ThreadCreatedEvent:
     result: ThreadCreationResult
 
@@ -96,20 +86,20 @@ class _TtsCompletedEvent:
 
 
 @dataclass(slots=True)
-class _PendingDialogDispatch:
-    session_id: str
-    turn_id: int
-    request: DialogRenderRequest
-    due_monotonic: float
-
-
-@dataclass(slots=True)
 class _PendingSemanticTurn:
     utterance_id: str
     text: str
     confidence: float
     interrupted_tts: bool
     due_monotonic: float
+
+
+@dataclass(slots=True)
+class _PendingResponse:
+    session_id: str
+    turn_id: int
+    dialog_act: DialogAct
+    text: str
 
 
 class ReceptionOrchestratorNode(Node):
@@ -123,16 +113,10 @@ class ReceptionOrchestratorNode(Node):
         self._load_parameters()
 
         self._ros_group = ReentrantCallbackGroup()
-        self._supervisor_llm_client = ActionClient(
+        self._llm_client = ActionClient(
             self,
             Chat,
-            self._supervisor_chat_action_name,
-            callback_group=self._ros_group,
-        )
-        self._dialog_llm_client = ActionClient(
-            self,
-            Chat,
-            self._dialog_chat_action_name,
+            self._llm_chat_action_name,
             callback_group=self._ros_group,
         )
         self._tts_client = ActionClient(self, Speak, '/tts/speak', callback_group=self._ros_group)
@@ -169,17 +153,10 @@ class ReceptionOrchestratorNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self._supervisor_status_subscription = self.create_subscription(
+        self._llm_status_subscription = self.create_subscription(
             LlmStatus,
-            self._supervisor_status_topic,
-            self._on_supervisor_llm_status,
-            llm_status_qos,
-            callback_group=self._ros_group,
-        )
-        self._dialog_status_subscription = self.create_subscription(
-            LlmStatus,
-            self._dialog_status_topic,
-            self._on_dialog_llm_status,
+            self._llm_status_topic,
+            self._on_llm_status,
             llm_status_qos,
             callback_group=self._ros_group,
         )
@@ -208,8 +185,7 @@ class ReceptionOrchestratorNode(Node):
         self._dependency_warn_state: dict[str, float] = {}
         self._dependency_ready_state: dict[str, bool] = {}
         self._all_dependencies_ready_logged = False
-        self._supervisor_backend_ready = False
-        self._dialog_backend_ready = False
+        self._llm_backend_ready = False
         self._asr_status_ok = False
         self._tts_status_ok = False
         self._asr_status_inflight = False
@@ -218,8 +194,8 @@ class ReceptionOrchestratorNode(Node):
         self._active_speech_starts: dict[str, float] = {}
         self._last_utterance_text = ''
         self._last_utterance_monotonic = 0.0
-        self._pending_dialog_dispatch: _PendingDialogDispatch | None = None
         self._pending_semantic_turn: _PendingSemanticTurn | None = None
+        self._pending_response_queue: list[_PendingResponse] = []
 
         self._tts_state_lock = threading.RLock()
         self._tts_busy = False
@@ -234,14 +210,10 @@ class ReceptionOrchestratorNode(Node):
         self._tick_timer = self.create_timer(0.1, self._on_tick, callback_group=self._ros_group)
 
         self._supervisor_adapter = SupervisorAdapter(
-            self._invoke_supervisor_chat_action,
-            temperature=self._supervisor_temperature,
-            max_tokens=self._supervisor_max_tokens,
-        )
-        self._dialog_adapter = DialogAdapter(
-            self._invoke_dialog_chat_action,
+            self._invoke_llm_chat_action,
             temperature=self._dialog_temperature,
             max_tokens=self._dialog_max_tokens,
+            trace=self._trace_pipeline,
         )
         self._core = ReceptionOrchestratorCore(
             inactivity_reset_sec=self._session_inactivity_reset_sec,
@@ -262,17 +234,11 @@ class ReceptionOrchestratorNode(Node):
         self.declare_parameter('discord.adapter_name', 'discord')
         self.declare_parameter('discord.parent_channel_id', '')
         self.declare_parameter('session.inactivity_reset_sec', 60)
-        self.declare_parameter('barge_in.min_speech_sec', 0.25)
-        self.declare_parameter('response.followup_debounce_sec', 1.2)
         self.declare_parameter('response.followup_merge_window_ms', 1200)
-        self.declare_parameter('dialog.chat_action_name', '/dialog_llm/chat')
-        self.declare_parameter('dialog.status_topic', '/dialog_llm/status')
-        self.declare_parameter('dialog.temperature', 0.3)
-        self.declare_parameter('dialog.max_tokens', 64)
-        self.declare_parameter('supervisor.chat_action_name', '/supervisor_llm/chat')
-        self.declare_parameter('supervisor.status_topic', '/supervisor_llm/status')
-        self.declare_parameter('supervisor.temperature', 0.0)
-        self.declare_parameter('supervisor.max_tokens', 64)
+        self.declare_parameter('llm.chat_action_name', '/llm/chat')
+        self.declare_parameter('llm.status_topic', '/llm/status')
+        self.declare_parameter('llm.temperature', 0.1)
+        self.declare_parameter('llm.max_tokens', 96)
 
     def _load_parameters(self) -> None:
         self._discord_adapter_name = str(self.get_parameter('discord.adapter_name').value)
@@ -282,41 +248,23 @@ class ReceptionOrchestratorNode(Node):
         self._session_inactivity_reset_sec = int(
             self.get_parameter('session.inactivity_reset_sec').value
         )
-        self._barge_in_min_speech_sec = float(
-            self.get_parameter('barge_in.min_speech_sec').value
-        )
-        self._followup_debounce_sec = float(
-            self.get_parameter('response.followup_debounce_sec').value
-        )
         self._followup_merge_window_sec = (
             float(self.get_parameter('response.followup_merge_window_ms').value) / 1000.0
         )
-        self._dialog_chat_action_name = str(
-            self.get_parameter('dialog.chat_action_name').value
+        self._llm_chat_action_name = str(
+            self.get_parameter('llm.chat_action_name').value
         )
-        self._dialog_status_topic = str(self.get_parameter('dialog.status_topic').value)
-        self._dialog_temperature = float(self.get_parameter('dialog.temperature').value)
-        self._dialog_max_tokens = int(self.get_parameter('dialog.max_tokens').value)
-        self._supervisor_chat_action_name = str(
-            self.get_parameter('supervisor.chat_action_name').value
-        )
-        self._supervisor_status_topic = str(
-            self.get_parameter('supervisor.status_topic').value
-        )
-        self._supervisor_temperature = float(
-            self.get_parameter('supervisor.temperature').value
-        )
-        self._supervisor_max_tokens = int(self.get_parameter('supervisor.max_tokens').value)
+        self._llm_status_topic = str(self.get_parameter('llm.status_topic').value)
+        self._dialog_temperature = float(self.get_parameter('llm.temperature').value)
+        self._dialog_max_tokens = int(self.get_parameter('llm.max_tokens').value)
 
     def _on_tick(self) -> None:
         if not self._control_lock.acquire(blocking=False):
             return
         try:
             self._report_dependency_state()
-            self._maybe_cancel_tts_for_barge_in()
             self._poll_health_services()
             self._flush_pending_semantic_turn_if_due()
-            self._flush_pending_dialog_if_due()
             self._core.handle_inactivity(now=_utcnow())
             self._publish_session_state()
         finally:
@@ -337,22 +285,12 @@ class ReceptionOrchestratorNode(Node):
             now=now,
         )
         self._report_dependency(
-            key='supervisor_llm',
-            ready=self._supervisor_llm_client.server_is_ready() and self._supervisor_backend_ready,
-            ready_message=f'Supervisor LLM action server is ready: {self._supervisor_chat_action_name}',
+            key='llm',
+            ready=self._llm_client.server_is_ready() and self._llm_backend_ready,
+            ready_message=f'LLM action server is ready: {self._llm_chat_action_name}',
             waiting_message=(
-                f'Waiting for supervisor LLM action server {self._supervisor_chat_action_name} '
-                f'and backend READY state on {self._supervisor_status_topic}.'
-            ),
-            now=now,
-        )
-        self._report_dependency(
-            key='dialog_llm',
-            ready=self._dialog_llm_client.server_is_ready() and self._dialog_backend_ready,
-            ready_message=f'Dialog LLM action server is ready: {self._dialog_chat_action_name}',
-            waiting_message=(
-                f'Waiting for dialog LLM action server {self._dialog_chat_action_name} '
-                f'and backend READY state on {self._dialog_status_topic}.'
+                f'Waiting for LLM action server {self._llm_chat_action_name} '
+                f'and backend READY state on {self._llm_status_topic}.'
             ),
             now=now,
         )
@@ -372,12 +310,12 @@ class ReceptionOrchestratorNode(Node):
         )
         all_ready = all(
             self._dependency_ready_state.get(key, False)
-            for key in ('asr', 'supervisor_llm', 'dialog_llm', 'tts', 'chat_bridge')
+            for key in ('asr', 'llm', 'tts', 'chat_bridge')
         )
         if all_ready and not self._all_dependencies_ready_logged:
             self._all_dependencies_ready_logged = True
             self.get_logger().info(
-                'All backends ready: ASR, supervisor LLM, dialog LLM, TTS, and chat bridge are available'
+                'All backends ready: ASR, LLM, TTS, and chat bridge are available'
             )
             self._publish_event('all_backends_ready')
         if not all_ready:
@@ -428,9 +366,6 @@ class ReceptionOrchestratorNode(Node):
         if isinstance(event, _SupervisorResultEvent):
             self._handle_supervisor_result_event(event)
             return
-        if isinstance(event, _DialogRenderedEvent):
-            self._handle_dialog_rendered_event(event)
-            return
         if isinstance(event, _ThreadCreatedEvent):
             self._handle_thread_created_event(event)
             return
@@ -442,7 +377,6 @@ class ReceptionOrchestratorNode(Node):
             return
 
     def _handle_utterance_event(self, event: _UtteranceEvent) -> None:
-        self._pending_dialog_dispatch = None
         now = time.monotonic()
         pending = self._pending_semantic_turn
         if pending is None:
@@ -507,46 +441,13 @@ class ReceptionOrchestratorNode(Node):
             self._schedule_create_thread(outcome.session_id, outcome.initial_thread_text)
         if outcome.discord_text and self._core.session is not None and self._core.session.discord.thread_id:
             self._send_thread_message(self._core.session.discord.thread_id, outcome.discord_text)
-        if outcome.dialog_request is not None:
-            if self._should_delay_dialog(event.decision, outcome.dialog_request):
-                self._pending_dialog_dispatch = _PendingDialogDispatch(
-                    session_id=outcome.session_id,
-                    turn_id=outcome.turn_id,
-                    request=outcome.dialog_request,
-                    due_monotonic=time.monotonic() + self._followup_debounce_sec,
-                )
-                self._publish_event(
-                    'dialog_deferred',
-                    session_id=outcome.session_id,
-                    turn_id=outcome.turn_id,
-                    dialog_act=outcome.dialog_request.dialog_act,
-                    due_in_sec=round(self._followup_debounce_sec, 3),
-                )
-            else:
-                self._schedule_dialog_render(outcome.dialog_request)
-
-    def _handle_dialog_rendered_event(self, event: _DialogRenderedEvent) -> None:
-        text = self._core.accept_dialog_render(
-            session_id=event.session_id,
-            turn_id=event.turn_id,
-            dialog_act=event.dialog_act,
-            text=event.text,
-            now=_utcnow(),
-        )
-        if not text:
-            self._publish_event(
-                'stale_dialog_render',
-                session_id=event.session_id,
-                turn_id=event.turn_id,
-                dialog_act=event.dialog_act,
+        if outcome.dialog_act is not None and outcome.spoken_response:
+            self._enqueue_or_speak_response(
+                session_id=outcome.session_id,
+                turn_id=outcome.turn_id,
+                dialog_act=outcome.dialog_act,
+                text=outcome.spoken_response,
             )
-            return
-        self._speak_text_async(
-            session_id=event.session_id,
-            turn_id=event.turn_id,
-            dialog_act=event.dialog_act,
-            text=text,
-        )
 
     def _handle_thread_created_event(self, event: _ThreadCreatedEvent) -> None:
         text = self._core.handle_thread_created(event.result)
@@ -561,14 +462,13 @@ class ReceptionOrchestratorNode(Node):
         self._send_thread_message(self._core.session.discord.thread_id, text)
 
     def _handle_secretary_reply_event(self, event: _SecretaryReplyEvent) -> None:
-        self._pending_dialog_dispatch = None
-        request = self._core.handle_secretary_reply(
+        outcome = self._core.handle_secretary_reply(
             thread_id=event.thread_id,
             message_id=event.message_id,
             text=event.text,
             now=_utcnow(),
         )
-        if request is None:
+        if outcome is None:
             return
         self._publish_event(
             'secretary_reply',
@@ -576,7 +476,13 @@ class ReceptionOrchestratorNode(Node):
             message_id=event.message_id,
             text=event.text,
         )
-        self._schedule_dialog_render(request)
+        if outcome.dialog_act is not None and outcome.spoken_response:
+            self._enqueue_or_speak_response(
+                session_id=outcome.session_id,
+                turn_id=outcome.turn_id,
+                dialog_act=outcome.dialog_act,
+                text=outcome.spoken_response,
+            )
 
     def _handle_tts_completed_event(self, event: _TtsCompletedEvent) -> None:
         self._core.handle_tts_completed(
@@ -593,6 +499,7 @@ class ReceptionOrchestratorNode(Node):
             success=event.success,
             error_message=event.error_message,
         )
+        self._maybe_dispatch_buffered_response()
 
     def _on_utterance(self, msg: Utterance) -> None:
         text = msg.text.strip()
@@ -635,11 +542,8 @@ class ReceptionOrchestratorNode(Node):
             )
         )
 
-    def _on_supervisor_llm_status(self, msg: LlmStatus) -> None:
-        self._supervisor_backend_ready = msg.status == LlmStatus.READY
-
-    def _on_dialog_llm_status(self, msg: LlmStatus) -> None:
-        self._dialog_backend_ready = msg.status == LlmStatus.READY
+    def _on_llm_status(self, msg: LlmStatus) -> None:
+        self._llm_backend_ready = msg.status == LlmStatus.READY
 
     def _schedule_supervisor(
         self,
@@ -648,9 +552,16 @@ class ReceptionOrchestratorNode(Node):
         utterance_id: str,
         snapshot,
         utterance_text: str,
+        *,
+        captured_during_tts: bool,
     ) -> None:
         def _run() -> None:
-            decision = self._supervisor_adapter.analyze(snapshot, utterance_text)
+            decision = self._supervisor_adapter.analyze(
+                snapshot,
+                utterance_text,
+                currently_speaking=self._is_tts_busy(),
+                captured_during_tts=captured_during_tts,
+            )
             self._event_queue.put(
                 _SupervisorResultEvent(
                     session_id=session_id,
@@ -658,20 +569,6 @@ class ReceptionOrchestratorNode(Node):
                     utterance_id=utterance_id,
                     utterance_text=utterance_text,
                     decision=decision,
-                )
-            )
-
-        self._background.submit(_run)
-
-    def _schedule_dialog_render(self, request: DialogRenderRequest) -> None:
-        def _run() -> None:
-            rendered = self._dialog_adapter.render(request)
-            self._event_queue.put(
-                _DialogRenderedEvent(
-                    session_id=request.session_id,
-                    turn_id=request.turn_id,
-                    dialog_act=request.dialog_act,
-                    text=rendered,
                 )
             )
 
@@ -707,7 +604,7 @@ class ReceptionOrchestratorNode(Node):
 
         self._background.submit(_run)
 
-    def _invoke_supervisor_chat_action(
+    def _invoke_llm_chat_action(
         self,
         session_id: str,
         user_message: str,
@@ -715,36 +612,18 @@ class ReceptionOrchestratorNode(Node):
         temperature: float,
         max_tokens: int,
         stateless: bool,
+        response_json_schema: str | None = None,
     ) -> str:
         return self._invoke_chat_action(
-            self._supervisor_llm_client,
-            self._supervisor_chat_action_name,
+            self._llm_client,
+            self._llm_chat_action_name,
             session_id,
             user_message,
             system_prompt,
             temperature,
             max_tokens,
             stateless,
-        )
-
-    def _invoke_dialog_chat_action(
-        self,
-        session_id: str,
-        user_message: str,
-        system_prompt: str,
-        temperature: float,
-        max_tokens: int,
-        stateless: bool,
-    ) -> str:
-        return self._invoke_chat_action(
-            self._dialog_llm_client,
-            self._dialog_chat_action_name,
-            session_id,
-            user_message,
-            system_prompt,
-            temperature,
-            max_tokens,
-            stateless,
+            response_json_schema,
         )
 
     def _invoke_chat_action(
@@ -757,34 +636,50 @@ class ReceptionOrchestratorNode(Node):
         temperature: float,
         max_tokens: int,
         stateless: bool,
+        response_json_schema: str | None,
     ) -> str:
-        if not client.wait_for_server(timeout_sec=5.0):
-            raise RuntimeError(f'{action_name} action server is unavailable')
+        deadline = time.monotonic() + 30.0
+        while True:
+            if not client.wait_for_server(timeout_sec=5.0):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'{action_name} action server is unavailable')
+                time.sleep(0.2)
+                continue
 
-        goal = Chat.Goal()
-        goal.session_id = session_id
-        goal.user_message = user_message
-        goal.system_prompt = system_prompt
-        goal.temperature = float(temperature)
-        goal.max_tokens = int(max_tokens)
-        goal.stateless = bool(stateless)
+            goal = Chat.Goal()
+            goal.session_id = session_id
+            goal.user_message = user_message
+            goal.system_prompt = system_prompt
+            goal.temperature = float(temperature)
+            goal.max_tokens = int(max_tokens)
+            goal.stateless = bool(stateless)
+            if hasattr(goal, 'response_json_schema'):
+                goal.response_json_schema = response_json_schema or ''
 
-        self.get_logger().info(
-            f'LLM request: session={session_id} max_tokens={goal.max_tokens} '
-            f'stateless={goal.stateless} text={self._summarize_text(user_message)}'
-        )
-        goal_handle = self._wait_for_future(client.send_goal_async(goal), timeout_sec=30.0)
-        if goal_handle is None or not goal_handle.accepted:
-            raise RuntimeError(f'{action_name} goal rejected')
-        wrapped = self._wait_for_future(goal_handle.get_result_async(), timeout_sec=90.0)
-        result = wrapped.result
-        if not result.success:
-            raise RuntimeError(result.error_message or 'llm chat failed')
-        self.get_logger().info(
-            f'LLM response: session={session_id} prompt_tokens={result.prompt_tokens} '
-            f'completion_tokens={result.completion_tokens} text={self._summarize_text(result.assistant_message)}'
-        )
-        return result.assistant_message
+            self.get_logger().info(
+                f'LLM request: session={session_id} max_tokens={goal.max_tokens} '
+                f'stateless={goal.stateless} text={self._summarize_text(user_message)}'
+            )
+            goal_handle = self._wait_for_future(client.send_goal_async(goal), timeout_sec=10.0)
+            if goal_handle is None or not goal_handle.accepted:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'{action_name} goal rejected')
+                time.sleep(0.2)
+                continue
+
+            wrapped = self._wait_for_future(goal_handle.get_result_async(), timeout_sec=90.0)
+            result = wrapped.result
+            if not result.success:
+                message = result.error_message or 'llm chat failed'
+                if 'not ready' in message.lower() and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                    continue
+                raise RuntimeError(message)
+            self.get_logger().info(
+                f'LLM response: session={session_id} prompt_tokens={result.prompt_tokens} '
+                f'completion_tokens={result.completion_tokens} text={self._summarize_text(result.assistant_message)}'
+            )
+            return result.assistant_message
 
     def _speak_text_async(
         self,
@@ -798,6 +693,13 @@ class ReceptionOrchestratorNode(Node):
         if not cleaned:
             return
         self.get_logger().info(f'TTS speak: {cleaned}')
+        self._publish_event(
+            'tts_started',
+            session_id=session_id,
+            turn_id=turn_id,
+            dialog_act=dialog_act,
+            text=cleaned,
+        )
 
         def _run() -> None:
             if not self._tts_client.wait_for_server(timeout_sec=5.0):
@@ -872,37 +774,99 @@ class ReceptionOrchestratorNode(Node):
 
         self._background.submit(_run)
 
-    def _maybe_cancel_tts_for_barge_in(self) -> None:
-        with self._tts_state_lock:
-            if not self._tts_busy or self._current_tts_goal_handle is None or self._tts_cancel_requested:
-                return
-        now = time.monotonic()
-        for started_at in self._active_speech_starts.values():
-            if now - started_at >= self._barge_in_min_speech_sec:
-                with self._tts_state_lock:
-                    goal_handle = self._current_tts_goal_handle
-                    self._tts_cancel_requested = True
-                if goal_handle is not None:
-                    goal_handle.cancel_goal_async()
-                    self._publish_event(
-                        'barge_in_cancel',
-                        session_id=self._current_tts_session_id,
-                        turn_id=self._current_tts_turn_id,
-                    )
-                return
-
-    def _flush_pending_dialog_if_due(self) -> None:
-        pending = self._pending_dialog_dispatch
-        if pending is None or time.monotonic() < pending.due_monotonic:
+    def _enqueue_or_speak_response(
+        self,
+        *,
+        session_id: str,
+        turn_id: int,
+        dialog_act: DialogAct,
+        text: str,
+    ) -> None:
+        if self._is_tts_busy():
+            if self._pending_response_queue:
+                self._pending_response_queue.clear()
+                self._publish_event(
+                    'pending_response_collapsed',
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    dialog_act=dialog_act,
+                )
+            self._pending_response_queue.append(
+                _PendingResponse(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    dialog_act=dialog_act,
+                    text=text.strip(),
+                )
+            )
+            self._publish_event(
+                'llm_result_buffered',
+                session_id=session_id,
+                turn_id=turn_id,
+                dialog_act=dialog_act,
+                text=text.strip(),
+            )
             return
-        self._pending_dialog_dispatch = None
+
+        cleaned = self._core.accept_spoken_response(
+            session_id=session_id,
+            turn_id=turn_id,
+            dialog_act=dialog_act,
+            text=text,
+            now=_utcnow(),
+        )
+        if not cleaned:
+            self._publish_event(
+                'stale_llm_response_drop',
+                session_id=session_id,
+                turn_id=turn_id,
+                dialog_act=dialog_act,
+            )
+            return
+        self._speak_text_async(
+            session_id=session_id,
+            turn_id=turn_id,
+            dialog_act=dialog_act,
+            text=cleaned,
+        )
+
+    def _maybe_dispatch_buffered_response(self) -> None:
+        if self._is_tts_busy():
+            return
+        if not self._pending_response_queue:
+            return
+        pending = self._pending_response_queue.pop(-1)
         self._publish_event(
-            'dialog_dispatch',
+            'buffered_turn_dequeued',
             session_id=pending.session_id,
             turn_id=pending.turn_id,
-            dialog_act=pending.request.dialog_act,
+            dialog_act=pending.dialog_act,
         )
-        self._schedule_dialog_render(pending.request)
+        cleaned = self._core.accept_spoken_response(
+            session_id=pending.session_id,
+            turn_id=pending.turn_id,
+            dialog_act=pending.dialog_act,
+            text=pending.text,
+            now=_utcnow(),
+        )
+        if not cleaned:
+            self._publish_event(
+                'stale_tts_drop',
+                session_id=pending.session_id,
+                turn_id=pending.turn_id,
+                dialog_act=pending.dialog_act,
+            )
+            return
+        self._speak_text_async(
+            session_id=pending.session_id,
+            turn_id=pending.turn_id,
+            dialog_act=pending.dialog_act,
+            text=cleaned,
+        )
+
+    def _is_tts_busy(self) -> bool:
+        with self._tts_state_lock:
+            return self._tts_busy
 
     def _flush_pending_semantic_turn_if_due(self) -> None:
         pending = self._pending_semantic_turn
@@ -915,10 +879,8 @@ class ReceptionOrchestratorNode(Node):
         if pending is None:
             return
         if not (
-            self._supervisor_llm_client.server_is_ready()
-            and self._dialog_llm_client.server_is_ready()
-            and self._supervisor_backend_ready
-            and self._dialog_backend_ready
+            self._llm_client.server_is_ready()
+            and self._llm_backend_ready
         ):
             pending.due_monotonic = time.monotonic() + 0.5
             return
@@ -931,7 +893,7 @@ class ReceptionOrchestratorNode(Node):
         if turn is None:
             return
         self._publish_event(
-            'utterance',
+            'utterance_received',
             utterance_id=pending.utterance_id,
             text=pending.text,
             confidence=pending.confidence,
@@ -941,12 +903,20 @@ class ReceptionOrchestratorNode(Node):
         )
         if turn.create_thread:
             self._schedule_create_thread(turn.session_id, turn.initial_thread_text)
+        self._publish_event(
+            'llm_dispatched',
+            session_id=turn.session_id,
+            turn_id=turn.turn_id,
+            utterance_id=turn.utterance_id,
+            captured_during_tts=pending.interrupted_tts,
+        )
         self._schedule_supervisor(
             turn.session_id,
             turn.turn_id,
             turn.utterance_id,
             turn.snapshot,
             turn.user_text,
+            captured_during_tts=pending.interrupted_tts,
         )
 
     def _poll_health_services(self) -> None:
@@ -982,18 +952,6 @@ class ReceptionOrchestratorNode(Node):
             self._tts_status_ok = False
             return
         self._tts_status_ok = True
-
-    @staticmethod
-    def _should_delay_dialog(
-        decision: SupervisorDecision,
-        request: DialogRenderRequest,
-    ) -> bool:
-        return (
-            request.phase == 'collecting'
-            and request.dialog_act in {'ask_name', 'ask_affiliation', 'ask_purpose'}
-            and decision.speech_act in {'inform', 'correction'}
-            and not decision.ignore_input
-        )
 
     def _call_create_thread_service(self, *, thread_title: str, initial_text: str) -> CreateThread.Response:
         if not self._create_thread_client.wait_for_service(timeout_sec=5.0):

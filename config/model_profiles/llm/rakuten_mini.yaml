@@ -1,0 +1,19 @@
+profile_name: rakuten_mini
+task: llm
+runner: vllm
+repo_id: Rakuten/RakutenAI-2.0-mini-instruct
+device: cuda:0
+dtype: bfloat16
+context_len: 1024
+gpu_memory_utilization: 0.35
+trust_remote_code: true
+startup_args:
+  - --enforce-eager
+  - --generation-config
+  - vllm
+  - --max-num-seqs
+  - "1"
+expected_languages:
+  - ja
+latency_target_ms: 1000
+quality_notes: Candidate small Japanese-oriented instruct model for comparison.

@@ -1,0 +1,16 @@
+profile_name: qwen3_asr_gpu
+task: asr
+runner: custom_python
+repo_id: Qwen/Qwen3-ASR-0.6B
+backend: qwen_asr
+device: cuda:0
+dtype: auto
+context_len: 0
+memory_budget_mb: 4096
+trust_remote_code: true
+startup_args: []
+require_gpu: true
+expected_languages:
+  - ja
+latency_target_ms: 1200
+quality_notes: Default GPU ASR profile.
