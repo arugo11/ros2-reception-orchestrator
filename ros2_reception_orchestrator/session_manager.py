@@ -137,7 +137,7 @@ class ReceptionOrchestratorCore:
         if changed_fields:
             discord_update_kind = 'update'
 
-        dialog_act = self._resolve_dialog_act(session, decision)
+        dialog_act = self._resolve_dialog_act(session, decision, changed_fields=changed_fields)
         if dialog_act == 'confirm':
             session.phase = 'confirming'
             session.pending_confirmation = session.visitor_info.copy()
@@ -331,21 +331,41 @@ class ReceptionOrchestratorCore:
             changed_fields.append(field_name)
         return changed_fields
 
-    def _resolve_dialog_act(self, session: SessionState, decision: SupervisorDecision) -> DialogAct:
+    def _resolve_dialog_act(
+        self,
+        session: SessionState,
+        decision: SupervisorDecision,
+        *,
+        changed_fields: list[str],
+    ) -> DialogAct:
         if session.phase == 'notified_waiting':
             return 'acknowledge_waiting'
 
         missing_fields = session.visitor_info.missing_fields()
 
         if session.phase == 'confirming':
-            if decision.correction_target != 'none':
+            if decision.speech_act == 'affirm' and not changed_fields:
+                return 'notify_waiting'
+            if changed_fields or decision.correction_target != 'none':
                 if missing_fields:
                     return _dialog_act_for_missing(missing_fields)
-                return 'ack_correction'
-            if decision.speech_act == 'affirm' or decision.should_confirm:
+                return 'confirm'
+            if decision.speech_act == 'affirm':
                 return 'notify_waiting'
             if decision.speech_act in {'deny', 'correction', 'complaint'}:
                 return 'clarify'
+            if decision.ignore_input:
+                return 'confirm'
+            if any(
+                (
+                    decision.extracted_name,
+                    decision.extracted_affiliation,
+                    decision.extracted_purpose,
+                )
+            ):
+                if missing_fields:
+                    return _dialog_act_for_missing(missing_fields)
+                return 'confirm'
             return 'confirm'
 
         if session.visitor_info.has_required_fields() or decision.should_confirm:

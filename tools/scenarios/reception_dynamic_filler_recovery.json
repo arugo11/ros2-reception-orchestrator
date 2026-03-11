@@ -1,0 +1,24 @@
+{
+  "gap_sec": 1.5,
+  "settle_sec": 4.0,
+  "turns": [
+    "えっと、よろしくお願いします。",
+    "田中です。",
+    "情報工学科です。",
+    "書類を届けに来ました。",
+    "はい。"
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "visitor_info": {
+      "name": "田中",
+      "affiliation": "情報工学科",
+      "purpose": "書類を届けに来ました"
+    },
+    "max_tts_started_latency_ms": 4000,
+    "required_events": [
+      "llm_dispatched",
+      "tts_started"
+    ]
+  }
+}

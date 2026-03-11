@@ -37,7 +37,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'reception_orchestrator = ros2_reception_orchestrator.node:main',
+            'reception_orchestrator = ros2_reception_orchestrator.node_v2:main',
+            'semantic_extractor_server = ros2_reception_orchestrator.semantic_extractor_server:main',
+            'response_planner_server = ros2_reception_orchestrator.response_planner_server:main',
         ],
     },
 )

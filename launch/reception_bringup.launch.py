@@ -1,5 +1,8 @@
 import os
 from pathlib import Path
+import signal
+import subprocess
+import time
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -70,6 +73,73 @@ def _release_singleton_lock(context, *args, **kwargs):  # noqa: ANN001, ANN002, 
     return []
 
 
+def _terminate_existing_stack_processes(context, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    del context, args, kwargs
+    completed = subprocess.run(
+        ['ps', '-eo', 'pid=,args='],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return []
+
+    current_pid = os.getpid()
+    workspace_root = str(Path.cwd())
+    command_fragments = (
+        'reception_orchestrator',
+        'semantic_extractor_server',
+        'response_planner_server',
+        'asr_streaming_node',
+        'llm_chat_node',
+        'vllm_server_node',
+        'tts_server',
+        'chat_bridge_node',
+        'mic_input_node',
+        'vllm serve',
+    )
+    candidate_pids: list[int] = []
+    for raw_line in completed.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        command = parts[1]
+        if workspace_root not in command and 'vllm serve' not in command:
+            continue
+        if not any(fragment in command for fragment in command_fragments):
+            continue
+        candidate_pids.append(pid)
+
+    if not candidate_pids:
+        return []
+
+    for pid in candidate_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+    time.sleep(1.0)
+    for pid in candidate_pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+    return []
+
+
 def generate_launch_description() -> LaunchDescription:
     reception_params_default = PathJoinSubstitution(
         [FindPackageShare('ros2_reception_orchestrator'), 'config', 'params.yaml']
@@ -89,6 +159,8 @@ def generate_launch_description() -> LaunchDescription:
 
     model_catalog_file = LaunchConfiguration('model_catalog_file')
     profile_name = LaunchConfiguration('profile_name')
+    llm_provider = LaunchConfiguration('llm_provider')
+    llm_api_base_url = LaunchConfiguration('llm_api_base_url')
     enable_mic_input = LaunchConfiguration('enable_mic_input')
     reception_params_file = LaunchConfiguration('reception_params_file')
     discord_params_file = LaunchConfiguration('discord_params_file')
@@ -148,6 +220,8 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             'params_file': vllm_params_file,
+            'llm_provider': llm_provider,
+            'api_base_url': llm_api_base_url,
             'model_catalog_file': model_catalog_file,
             'profile_name': profile_name,
             'endpoint_prefix': 'llm',
@@ -205,9 +279,25 @@ def generate_launch_description() -> LaunchDescription:
             },
         ],
     )
+    semantic_extractor = Node(
+        package='ros2_reception_orchestrator',
+        executable='semantic_extractor_server',
+        name='semantic_extractor_server',
+        output='screen',
+        parameters=[reception_params_file],
+    )
+
+    response_planner = Node(
+        package='ros2_reception_orchestrator',
+        executable='response_planner_server',
+        name='response_planner_server',
+        output='screen',
+        parameters=[reception_params_file],
+    )
 
     return LaunchDescription(
         [
+            OpaqueFunction(function=_terminate_existing_stack_processes),
             OpaqueFunction(function=_acquire_singleton_lock),
             RegisterEventHandler(
                 OnShutdown(on_shutdown=[OpaqueFunction(function=_release_singleton_lock)])
@@ -221,6 +311,16 @@ def generate_launch_description() -> LaunchDescription:
                 'profile_name',
                 default_value='qwen_fullstack',
                 description='Shared model profile name used by LLM, ASR, and TTS.',
+            ),
+            DeclareLaunchArgument(
+                'llm_provider',
+                default_value='vllm',
+                description='LLM provider to use for /llm/chat, e.g. vllm or gemini.',
+            ),
+            DeclareLaunchArgument(
+                'llm_api_base_url',
+                default_value='',
+                description='OpenAI-compatible API base URL for direct LLM providers such as Gemini.',
             ),
             DeclareLaunchArgument(
                 'reception_params_file',
@@ -307,6 +407,8 @@ def generate_launch_description() -> LaunchDescription:
             llm_stack,
             tts_stack,
             discord_bridge,
+            semantic_extractor,
+            response_planner,
             reception_orchestrator,
         ]
     )

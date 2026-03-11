@@ -83,6 +83,7 @@ class DiscordThreadState:
 @dataclass(slots=True)
 class SupervisorDecision:
     speech_act: SpeechAct = 'unknown'
+    slot_candidates: VisitorInfo = field(default_factory=VisitorInfo)
     extracted_name: str | None = None
     extracted_affiliation: str | None = None
     extracted_purpose: str | None = None
@@ -90,6 +91,7 @@ class SupervisorDecision:
     missing_fields: list[FieldName] = field(default_factory=list)
     next_dialog_act: DialogAct | None = None
     should_confirm: bool = False
+    correction_scope: CorrectionTarget = 'none'
     correction_target: CorrectionTarget = 'none'
     discord_update_kind: DiscordUpdateKind = 'none'
     ignore_input: bool = False
