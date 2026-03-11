@@ -229,6 +229,7 @@ class ReceptionOrchestratorNode(Node):
             self._invoke_llm_chat_action,
             temperature=self._dialog_temperature,
             max_tokens=min(self._dialog_max_tokens, 80),
+            trace=self._trace_pipeline,
         )
         self._core = ReceptionOrchestratorCore(
             inactivity_reset_sec=self._session_inactivity_reset_sec,

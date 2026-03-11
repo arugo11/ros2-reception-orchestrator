@@ -1,0 +1,17 @@
+{
+  "gap_sec": 1.5,
+  "turns": [
+    { "text": "山田です。", "expect_dialog_act": "ask_affiliation" },
+    { "text": "総務部です。", "expect_dialog_act": "ask_purpose" },
+    { "text": "違います。広報部です。", "expect_dialog_act": "confirm" },
+    { "text": "書類提出です。", "expect_dialog_act": "confirm" },
+    { "text": "はい。", "expect_dialog_act": "notify_waiting" }
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "name": "山田",
+    "affiliation": "広報部",
+    "purpose": "書類提出です",
+    "last_dialog_act": "notify_waiting"
+  }
+}

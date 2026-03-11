@@ -1,0 +1,23 @@
+{
+  "gap_sec": 1.5,
+  "settle_sec": 4.0,
+  "turns": [
+    "学長に会いに来ました。",
+    "島中です。",
+    "菅谷研究室です。",
+    "はい。"
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "visitor_info": {
+      "name": "島中",
+      "affiliation": "菅谷研究室",
+      "purpose": "学長に会いに来ました"
+    },
+    "max_tts_started_latency_ms": 4000,
+    "required_events": [
+      "llm_dispatched",
+      "tts_started"
+    ]
+  }
+}

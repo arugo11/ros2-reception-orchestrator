@@ -1,0 +1,16 @@
+{
+  "gap_sec": 1.5,
+  "turns": [
+    { "text": "学長に会いに来ました。", "expect_dialog_act": "ask_name" },
+    { "text": "島中です。", "expect_dialog_act": "ask_affiliation" },
+    { "text": "菅谷研究室です。", "expect_dialog_act": "confirm" },
+    { "text": "はい。", "expect_dialog_act": "notify_waiting" }
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "name": "島中",
+    "affiliation": "菅谷研究室",
+    "purpose": "学長に会いに来ました",
+    "last_dialog_act": "notify_waiting"
+  }
+}

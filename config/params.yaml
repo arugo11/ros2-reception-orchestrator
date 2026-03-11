@@ -2,9 +2,26 @@ reception_orchestrator:
   ros__parameters:
     discord.adapter_name: "discord"
     discord.parent_channel_id: ""
-    session.inactivity_reset_sec: 60
+    asr.utterance_topic: "/asr/utterances"
+    extract.action_name: "/reception/extract_turn"
+    render.action_name: "/reception/render_dialog"
+    tts.action_name: "/tts/speak"
+    session.state_topic: "/reception/session_state"
+    execution.event_topic: "/reception/events"
     response.followup_merge_window_ms: 1200
+    queue.same_turn_replace: true
+    semantic.confidence_threshold: 0.55
+
+semantic_extractor_server:
+  ros__parameters:
     llm.chat_action_name: "/llm/chat"
-    llm.status_topic: "/llm/status"
-    llm.temperature: 0.1
+    llm.temperature: 0.0
+    llm.max_tokens: 180
+    extract.action_name: "/reception/extract_turn"
+
+response_planner_server:
+  ros__parameters:
+    llm.chat_action_name: "/llm/chat"
+    llm.temperature: 0.2
     llm.max_tokens: 96
+    render.action_name: "/reception/render_dialog"

@@ -1,0 +1,17 @@
+{
+  "gap_sec": 1.5,
+  "turns": [
+    { "text": "えっと、よろしくお願いします。", "expect_dialog_act": "ask_name" },
+    { "text": "田中です。", "expect_dialog_act": "ask_affiliation" },
+    { "text": "情報工学科です。", "expect_dialog_act": "ask_purpose" },
+    { "text": "書類を届けに来ました。", "expect_dialog_act": "confirm" },
+    { "text": "はい。", "expect_dialog_act": "notify_waiting" }
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "name": "田中",
+    "affiliation": "情報工学科",
+    "purpose": "書類を届けに来ました",
+    "last_dialog_act": "notify_waiting"
+  }
+}

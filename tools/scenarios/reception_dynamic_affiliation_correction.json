@@ -1,0 +1,24 @@
+{
+  "gap_sec": 1.5,
+  "settle_sec": 4.0,
+  "turns": [
+    "山田です。",
+    "総務部です。",
+    "違います。広報部です。",
+    "書類提出です。",
+    "はい。"
+  ],
+  "expect": {
+    "phase": "notified_waiting",
+    "visitor_info": {
+      "name": "山田",
+      "affiliation": "広報部",
+      "purpose": "書類提出です"
+    },
+    "max_tts_started_latency_ms": 4000,
+    "required_events": [
+      "llm_dispatched",
+      "tts_started"
+    ]
+  }
+}

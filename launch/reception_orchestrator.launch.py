@@ -24,6 +24,20 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package='ros2_reception_orchestrator',
+                executable='semantic_extractor_server',
+                name='semantic_extractor_server',
+                output='screen',
+                parameters=[params_file],
+            ),
+            Node(
+                package='ros2_reception_orchestrator',
+                executable='response_planner_server',
+                name='response_planner_server',
+                output='screen',
+                parameters=[params_file],
+            ),
+            Node(
+                package='ros2_reception_orchestrator',
                 executable='reception_orchestrator',
                 name='reception_orchestrator',
                 output='screen',

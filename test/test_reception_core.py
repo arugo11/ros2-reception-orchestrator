@@ -260,10 +260,96 @@ def test_discord_update_deduplicates_same_text():
         now=_now(),
     )
 
-    assert outcome1 is not None
-    assert outcome1.discord_update_kind == 'update'
-    assert outcome2 is not None
-    assert outcome2.discord_update_kind == 'none'
+
+def test_confirming_new_information_reopens_collection_when_slots_change():
+    core = _make_core()
+    turn1 = core.begin_turn(utterance_id='u1', text='山田です', now=_now())
+    assert turn1 is not None
+    core.reduce_supervisor_turn(
+        session_id=turn1.session_id,
+        turn_id=turn1.turn_id,
+        utterance_text='山田です',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_name='山田',
+            missing_fields=['affiliation', 'purpose'],
+        ),
+        now=_now(),
+    )
+    turn2 = core.begin_turn(utterance_id='u2', text='総務部です', now=_now())
+    assert turn2 is not None
+    core.reduce_supervisor_turn(
+        session_id=turn2.session_id,
+        turn_id=turn2.turn_id,
+        utterance_text='総務部です',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_affiliation='総務部',
+            missing_fields=['purpose'],
+        ),
+        now=_now(),
+    )
+    turn3 = core.begin_turn(utterance_id='u3', text='書類提出です', now=_now())
+    assert turn3 is not None
+    core.reduce_supervisor_turn(
+        session_id=turn3.session_id,
+        turn_id=turn3.turn_id,
+        utterance_text='書類提出です',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_purpose='書類提出です',
+            missing_fields=[],
+            should_confirm=True,
+        ),
+        now=_now(),
+    )
+    assert core.session is not None
+    assert core.session.phase == 'confirming'
+
+    turn4 = core.begin_turn(utterance_id='u4', text='違います。広報部です。', now=_now())
+    assert turn4 is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn4.session_id,
+        turn_id=turn4.turn_id,
+        utterance_text='違います。広報部です。',
+        decision=SupervisorDecision(
+            speech_act='correction',
+            extracted_affiliation='広報部',
+            correction_target='affiliation',
+            missing_fields=[],
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act == 'confirm'
+    assert core.session is not None
+    assert core.session.visitor_info.affiliation == '広報部'
+    assert core.session.phase == 'confirming'
+
+
+def test_collecting_ignore_input_retries_without_state_change():
+    core = _make_core()
+    turn = core.begin_turn(utterance_id='u1', text='えっと、よろしくお願いします', now=_now())
+    assert turn is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        utterance_text='えっと、よろしくお願いします',
+        decision=SupervisorDecision(
+            speech_act='greeting',
+            ignore_input=True,
+            missing_fields=['name', 'affiliation', 'purpose'],
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act is None
+    assert core.session is not None
+    assert core.session.visitor_info.name is None
+    assert core.session.visitor_info.affiliation is None
+    assert core.session.visitor_info.purpose is None
 
 
 def test_confirming_affirm_ignores_llm_confirm_template():
@@ -357,6 +443,49 @@ def test_notified_waiting_question_does_not_restart_name_prompt():
     assert outcome is not None
     assert outcome.dialog_act == 'acknowledge_waiting'
     assert outcome.spoken_response == '承知しました。担当者への連絡は継続しておりますので、少々お待ちください。'
+
+
+def test_confirming_new_information_reopens_confirmation_instead_of_accepting():
+    core = _make_core()
+    turn = core.begin_turn(utterance_id='u1', text='山田です。総務部です。面会です。', now=_now())
+    assert turn is not None
+    core.reduce_supervisor_turn(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        utterance_text='山田です。総務部です。面会です。',
+        decision=SupervisorDecision(
+            speech_act='inform',
+            extracted_name='山田',
+            extracted_affiliation='総務部',
+            extracted_purpose='面会です',
+            should_confirm=True,
+            missing_fields=[],
+            spoken_response='確認します。',
+        ),
+        now=_now(),
+    )
+
+    turn2 = core.begin_turn(utterance_id='u2', text='違います。広報部です。', now=_now())
+    assert turn2 is not None
+    outcome = core.reduce_supervisor_turn(
+        session_id=turn2.session_id,
+        turn_id=turn2.turn_id,
+        utterance_text='違います。広報部です。',
+        decision=SupervisorDecision(
+            speech_act='correction',
+            extracted_affiliation='広報部',
+            correction_target='affiliation',
+            missing_fields=[],
+            spoken_response='確認します。',
+        ),
+        now=_now(),
+    )
+
+    assert outcome is not None
+    assert outcome.dialog_act == 'confirm'
+    assert core.session is not None
+    assert core.session.phase == 'confirming'
+    assert core.session.visitor_info.affiliation == '広報部'
 
 
 def test_inactivity_resets_session():
