@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from datetime import datetime
+import json
 
 from ros2_reception_orchestrator.session_reducer_v2 import SessionReducer
 from ros2_reception_orchestrator.v2_types import BeliefOperationData
@@ -281,3 +282,141 @@ def test_prompt_leak_slot_write_is_rejected_and_clarified() -> None:
 
     assert outcome.dialog_act == 'clarify_name'
     assert reducer.state.working_info.name == ''
+
+
+def test_purpose_first_utterance_populates_purpose_and_keeps_name_missing() -> None:
+    reducer = SessionReducer(confidence_threshold=0.55)
+
+    outcome = reducer.apply(
+        turn_seq=1,
+        utterance_text='打ち合わせで伺いました。',
+        decision=SemanticDecisionData(
+            turn_seq=1,
+            speech_act='inform',
+            target_slot='name',
+            ambiguity='low',
+            confidence=0.92,
+            operations=[
+                BeliefOperationData(
+                    op='set_slot',
+                    slot='name',
+                    value='打ち合わせ',
+                    grounded_text='打ち合わせ',
+                    confidence=0.92,
+                )
+            ],
+        ),
+    )
+
+    proposed = next(event for event in outcome.trace_events if event.event_type == 'OPERATIONS_PROPOSED')
+    payload = json.loads(proposed.payload_json)
+
+    assert outcome.dialog_act == 'ask_name'
+    assert reducer.state.working_info.name == ''
+    assert reducer.state.working_info.purpose == '打ち合わせで伺いました'
+    assert 'purpose-first-guard' in payload['rejected_reasons']
+
+
+def test_confirming_new_grounded_information_reopens_confirmation() -> None:
+    reducer = SessionReducer(confidence_threshold=0.55)
+    reducer.state.phase = 'confirming'
+    reducer.state.working_info.name = '島中'
+    reducer.state.working_info.affiliation = '菅屋研究室'
+    reducer.state.working_info.purpose = '打ち合わせ'
+
+    outcome = reducer.apply(
+        turn_seq=5,
+        utterance_text='用件は書類のお届けです',
+        decision=SemanticDecisionData(
+            turn_seq=5,
+            speech_act='correction',
+            target_slot='purpose',
+            ambiguity='low',
+            confidence=0.95,
+            operations=[
+                BeliefOperationData(
+                    op='replace_slot',
+                    slot='purpose',
+                    value='書類のお届け',
+                    grounded_text='書類のお届け',
+                    confidence=0.95,
+                )
+            ],
+        ),
+    )
+
+    assert outcome.dialog_act == 'confirm_snapshot'
+    assert reducer.state.phase == 'confirming'
+    assert reducer.state.working_info.purpose == '書類のお届け'
+    assert reducer.state.committed_info.purpose == ''
+
+
+def test_single_missing_slot_stages_committed_snapshot_before_explicit_confirm() -> None:
+    reducer = SessionReducer(confidence_threshold=0.55)
+    reducer.state.working_info.name = '島中'
+    reducer.state.working_info.affiliation = '菅屋研究室'
+    reducer.state.phase = 'collecting'
+
+    outcome = reducer.apply(
+        turn_seq=6,
+        utterance_text='打ち合わせです',
+        decision=SemanticDecisionData(
+            turn_seq=6,
+            speech_act='inform',
+            target_slot='purpose',
+            ambiguity='low',
+            confidence=0.91,
+            operations=[
+                BeliefOperationData(
+                    op='set_slot',
+                    slot='purpose',
+                    value='打ち合わせ',
+                    grounded_text='打ち合わせ',
+                    confidence=0.91,
+                )
+            ],
+        ),
+    )
+
+    staged = next(event for event in outcome.trace_events if event.event_type == 'SNAPSHOT_STAGED')
+
+    assert outcome.dialog_act == 'confirm_snapshot'
+    assert reducer.state.phase == 'confirming'
+    assert reducer.state.committed_info.purpose == '打ち合わせ'
+    assert json.loads(staged.payload_json)['committed_info']['purpose'] == '打ち合わせ'
+
+
+def test_confirming_affirm_with_slot_mutation_is_rejected_and_keeps_confirm_state() -> None:
+    reducer = SessionReducer(confidence_threshold=0.55)
+    reducer.state.phase = 'confirming'
+    reducer.state.working_info.name = '島中'
+    reducer.state.working_info.affiliation = '菅屋研究室'
+    reducer.state.working_info.purpose = '打ち合わせ'
+
+    outcome = reducer.apply(
+        turn_seq=7,
+        utterance_text='はい',
+        decision=SemanticDecisionData(
+            turn_seq=7,
+            speech_act='affirm',
+            target_slot='purpose',
+            ambiguity='low',
+            confidence=0.95,
+            operations=[
+                BeliefOperationData(
+                    op='replace_slot',
+                    slot='purpose',
+                    value='書類のお届け',
+                    grounded_text='書類のお届け',
+                    confidence=0.95,
+                )
+            ],
+        ),
+    )
+
+    proposed = next(event for event in outcome.trace_events if event.event_type == 'OPERATIONS_PROPOSED')
+    payload = json.loads(proposed.payload_json)
+
+    assert outcome.dialog_act == 'notify_waiting'
+    assert reducer.state.committed_info.purpose == '打ち合わせ'
+    assert 'confirming-with-mutation' in payload['rejected_reasons']

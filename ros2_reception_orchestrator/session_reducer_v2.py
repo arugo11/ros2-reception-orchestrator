@@ -27,6 +27,7 @@ _VALID_OPS = {
     'ignore',
 }
 _VALID_SLOTS = {'name', 'affiliation', 'purpose'}
+_CLARIFICATION_REASONS = {'ungrounded', 'multi-slot-duplicate'}
 
 
 class SessionReducer:
@@ -83,14 +84,20 @@ class SessionReducer:
             )
         ]
 
-        operations, rejected_reason = self._prepare_operations(state, decision, utterance_text=utterance_text)
+        missing_before = set(state.working_info.missing_fields())
+        operations, rejected_reasons = self._prepare_operations(
+            state,
+            decision,
+            utterance_text=utterance_text,
+        )
         trace_events.append(
             TraceEventData(
                 event_type='OPERATIONS_PROPOSED',
                 payload_json=json.dumps(
                     {
                         'operations': [self._op_to_payload(op) for op in operations],
-                        'rejected_reason': rejected_reason,
+                        'rejected_reason': rejected_reasons[0] if rejected_reasons else '',
+                        'rejected_reasons': list(rejected_reasons),
                     },
                     ensure_ascii=False,
                 ),
@@ -101,7 +108,9 @@ class SessionReducer:
         outbox_items: list[ChatOutboxItemData] = []
         requested_clarification_slot = ''
         snapshot_confirmed = False
+        snapshot_staged = False
         working_changed = False
+        slot_mutation_slots: list[str] = []
 
         for operation in operations:
             effective_confidence = max(float(decision.confidence), float(operation.confidence or 0.0))
@@ -131,6 +140,7 @@ class SessionReducer:
                 )
                 state.pending_clarification_slot = ''
                 working_changed = True
+                slot_mutation_slots.append(slot)
                 applied_operations.append(operation)
                 continue
 
@@ -142,6 +152,7 @@ class SessionReducer:
                     setattr(state.working_info, slot, '')
                     state.working_provenance.pop(slot, None)
                     working_changed = True
+                    slot_mutation_slots.append(slot)
                     applied_operations.append(operation)
                 continue
 
@@ -177,8 +188,21 @@ class SessionReducer:
         if not operations and decision.requires_confirmation:
             requested_clarification_slot = self._preferred_slot(state, decision)
 
-        if rejected_reason and not requested_clarification_slot:
+        if (
+            rejected_reasons
+            and not requested_clarification_slot
+            and any(reason in _CLARIFICATION_REASONS for reason in rejected_reasons)
+        ):
             requested_clarification_slot = self._preferred_slot(state, decision)
+
+        if self._should_stage_single_missing_commit(
+            state=state,
+            decision=decision,
+            missing_before=missing_before,
+            slot_mutation_slots=slot_mutation_slots,
+        ):
+            state.committed_info = state.working_info.copy()
+            snapshot_staged = True
 
         dialog_act = self._resolve_dialog_act(
             state=state,
@@ -186,6 +210,7 @@ class SessionReducer:
             requested_clarification_slot=requested_clarification_slot,
             snapshot_confirmed=snapshot_confirmed,
             had_changes=working_changed,
+            slot_mutation_slots=slot_mutation_slots,
             applied_operations=applied_operations,
         )
         state.focus_slot = _slot_for_dialog_act(dialog_act)
@@ -207,7 +232,7 @@ class SessionReducer:
             }
         )
 
-        if working_changed or snapshot_confirmed:
+        if working_changed or snapshot_confirmed or snapshot_staged:
             trace_events.append(
                 TraceEventData(
                     event_type='WORKING_STATE_UPDATED',
@@ -239,6 +264,18 @@ class SessionReducer:
             trace_events.append(
                 TraceEventData(
                     event_type='SNAPSHOT_CONFIRMED',
+                    dialog_act=dialog_act,
+                    payload_json=json.dumps(
+                        {'committed_info': state.committed_info.as_dict()},
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+
+        if snapshot_staged and not snapshot_confirmed:
+            trace_events.append(
+                TraceEventData(
+                    event_type='SNAPSHOT_STAGED',
                     dialog_act=dialog_act,
                     payload_json=json.dumps(
                         {'committed_info': state.committed_info.as_dict()},
@@ -324,15 +361,42 @@ class SessionReducer:
         decision: SemanticDecisionData,
         *,
         utterance_text: str,
-    ) -> tuple[list[BeliefOperationData], str]:
+    ) -> tuple[list[BeliefOperationData], list[str]]:
         original_operations = [self._sanitize_operation(op) for op in decision.operations]
+        original_slot_ops = [
+            op
+            for op in original_operations
+            if op.op in {'set_slot', 'replace_slot'}
+            and op.normalized_slot() in _VALID_SLOTS
+            and str(op.value or '').strip()
+        ]
+        if len(original_slot_ops) >= 2:
+            unique_values = {str(op.value or '').strip() for op in original_slot_ops}
+            touched_slots = {op.normalized_slot() for op in original_slot_ops}
+            if len(unique_values) == 1 and len(touched_slots) >= 2:
+                return (
+                    [
+                        BeliefOperationData(
+                            op='request_clarification',
+                            slot=self._preferred_slot(state, decision),
+                            confidence=float(decision.confidence),
+                        )
+                    ],
+                    ['multi-slot-duplicate'],
+                )
         operations = [op for op in original_operations if op.op in _VALID_OPS]
-        operations = self._filter_incoherent_operations(state, decision, operations, utterance_text=utterance_text)
+        operations, rejected_reasons = self._filter_incoherent_operations(
+            state,
+            decision,
+            operations,
+            utterance_text=utterance_text,
+        )
 
         if not operations:
             operations = self._derive_meta_operations(state, decision)
             if not operations and original_operations and decision.speech_act not in {'greeting', 'affirm'}:
-                return operations, 'ungrounded_or_low_information_rejected'
+                rejected_reasons.append('ungrounded')
+                return operations, rejected_reasons
 
         slot_ops = [
             op for op in operations if op.op in {'set_slot', 'replace_slot'} and op.normalized_slot() in _VALID_SLOTS and str(op.value or '').strip()
@@ -351,9 +415,10 @@ class SessionReducer:
                         confidence=float(decision.confidence),
                     )
                 )
-                return safe_ops, 'same_value_multi_slot_rejected'
+                rejected_reasons.append('multi-slot-duplicate')
+                return safe_ops, rejected_reasons
 
-        return operations, ''
+        return operations, rejected_reasons
 
     def _filter_incoherent_operations(
         self,
@@ -362,9 +427,18 @@ class SessionReducer:
         operations: list[BeliefOperationData],
         *,
         utterance_text: str,
-    ) -> list[BeliefOperationData]:
+    ) -> tuple[list[BeliefOperationData], list[str]]:
         filtered: list[BeliefOperationData] = []
+        rejected_reasons: list[str] = []
         low_information_utterance = _is_low_information_utterance(utterance_text)
+        correction_slot = self._correction_target_slot(state, decision)
+        correction_mode = decision.speech_act in {'deny', 'correction'}
+        purpose_first_operation = self._purpose_first_operation(
+            state=state,
+            decision=decision,
+            utterance_text=utterance_text,
+            operations=operations,
+        )
         for operation in operations:
             slot = operation.normalized_slot()
             value = str(operation.value or '').strip()
@@ -373,14 +447,23 @@ class SessionReducer:
                 if slot not in _VALID_SLOTS or not value:
                     continue
                 if decision.speech_act in {'greeting', 'affirm'}:
+                    rejected_reasons.append('confirming-with-mutation')
                     continue
                 if low_information_utterance:
+                    rejected_reasons.append('ungrounded')
+                    continue
+                if correction_mode and correction_slot in _VALID_SLOTS and slot != correction_slot:
+                    rejected_reasons.append('correction-scope-pruned')
+                    continue
+                if purpose_first_operation is not None and slot == 'name':
+                    rejected_reasons.append('purpose-first-guard')
                     continue
                 if not _is_grounded_slot_operation(
                     utterance_text=utterance_text,
                     grounded_text=operation.grounded_text,
                     value=value,
                 ):
+                    rejected_reasons.append('ungrounded')
                     continue
                 filtered.append(operation)
                 continue
@@ -421,7 +504,10 @@ class SessionReducer:
             if operation.op == 'ignore':
                 filtered.append(operation)
 
-        return filtered
+        if purpose_first_operation is not None:
+            filtered.append(purpose_first_operation)
+
+        return filtered, _dedupe_preserve_order(rejected_reasons)
 
     def _derive_meta_operations(
         self,
@@ -462,6 +548,7 @@ class SessionReducer:
         requested_clarification_slot: str,
         snapshot_confirmed: bool,
         had_changes: bool,
+        slot_mutation_slots: list[str],
         applied_operations: list[BeliefOperationData],
     ) -> DialogAct:
         preferred_slot = self._preferred_slot(state, decision)
@@ -471,6 +558,11 @@ class SessionReducer:
 
         if state.phase == 'notified_waiting':
             return 'acknowledge_waiting'
+
+        if state.phase == 'confirming' and had_changes and slot_mutation_slots:
+            state.phase = 'confirming'
+            state.pending_clarification_slot = ''
+            return 'confirm_snapshot'
 
         if requested_clarification_slot in _VALID_SLOTS:
             state.phase = 'collecting'
@@ -500,6 +592,74 @@ class SessionReducer:
         if str(decision.ambiguity or 'high').strip().lower() == 'high':
             return False
         return state.working_info.has_required_fields()
+
+    def _should_stage_single_missing_commit(
+        self,
+        *,
+        state: SessionStateData,
+        decision: SemanticDecisionData,
+        missing_before: set[str],
+        slot_mutation_slots: list[str],
+    ) -> bool:
+        if len(missing_before) != 1:
+            return False
+        if not state.working_info.has_required_fields():
+            return False
+        if len(slot_mutation_slots) != 1:
+            return False
+        slot = slot_mutation_slots[0]
+        if slot not in missing_before:
+            return False
+        if float(decision.confidence) < self._confidence_threshold:
+            return False
+        if str(decision.ambiguity or 'high').strip().lower() == 'high':
+            return False
+        return True
+
+    def _correction_target_slot(
+        self,
+        state: SessionStateData,
+        decision: SemanticDecisionData,
+    ) -> str:
+        if state.pending_clarification_slot in _VALID_SLOTS:
+            return state.pending_clarification_slot
+        requested = _sanitize_slot(decision.target_slot)
+        if requested in _VALID_SLOTS:
+            return requested
+        if state.focus_slot in _VALID_SLOTS:
+            return state.focus_slot
+        return 'none'
+
+    def _purpose_first_operation(
+        self,
+        *,
+        state: SessionStateData,
+        decision: SemanticDecisionData,
+        utterance_text: str,
+        operations: list[BeliefOperationData],
+    ) -> BeliefOperationData | None:
+        if state.phase != 'collecting':
+            return None
+        if decision.speech_act not in {'inform', 'unknown'}:
+            return None
+        if state.working_info.purpose:
+            return None
+        if any(op.normalized_slot() == 'purpose' for op in operations if op.op in {'set_slot', 'replace_slot'}):
+            return None
+        if not any(op.normalized_slot() == 'name' for op in operations if op.op in {'set_slot', 'replace_slot'}):
+            return None
+        if not _looks_like_purpose_first_utterance(utterance_text):
+            return None
+        purpose_value = _extract_purpose_candidate(utterance_text)
+        if not purpose_value:
+            return None
+        return BeliefOperationData(
+            op='set_slot',
+            slot='purpose',
+            value=purpose_value,
+            grounded_text=purpose_value,
+            confidence=float(decision.confidence),
+        )
 
     def _enqueue_confirmed_snapshot(
         self,
@@ -639,6 +799,57 @@ def _normalize_grounding_text(text: str) -> str:
 
 def _is_fragile_latin_fragment(text: str) -> bool:
     return bool(text) and len(text) <= 2 and all('a' <= char <= 'z' for char in text)
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _looks_like_purpose_first_utterance(text: str) -> bool:
+    utterance = str(text or '').strip()
+    if not utterance:
+        return False
+    purpose_markers = (
+        '会いに来',
+        '面会',
+        '打ち合わせ',
+        'ミーティング',
+        '用件',
+        '訪問',
+        '伺い',
+        '届けに来',
+        '書類',
+        '相談',
+        'お願い',
+    )
+    identity_markers = (
+        '名前は',
+        '申します',
+        '所属は',
+        '研究室',
+        '会社',
+        '大学',
+        'といいます',
+    )
+    if any(marker in utterance for marker in identity_markers):
+        return False
+    return any(marker in utterance for marker in purpose_markers)
+
+
+def _extract_purpose_candidate(text: str) -> str:
+    candidate = str(text or '').strip()
+    if not candidate:
+        return ''
+    while candidate and candidate[-1] in '。.!?！？':
+        candidate = candidate[:-1].rstrip()
+    return candidate
 
 
 def _format_confirmed_post(info: VisitorInfoData) -> str:

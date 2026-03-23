@@ -25,6 +25,9 @@ semantic_extractor_server:
     llm.temperature: 0.0
     llm.max_tokens: 180
     extract.action_name: "/reception/extract_turn"
+    extract.provider: "chat_llm"
+    extract.shadow_enabled: false
+    extract.shadow_provider: ""
 
 response_planner_server:
   ros__parameters:

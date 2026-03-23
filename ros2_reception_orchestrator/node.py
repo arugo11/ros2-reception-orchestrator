@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 import json
+import os
 import queue
 import threading
 import time
@@ -115,9 +116,11 @@ class _PendingResponse:
 class ReceptionOrchestratorNode(Node):
     _DEPENDENCY_WARN_INTERVAL_SEC = 5.0
     _HEALTH_POLL_INTERVAL_SEC = 2.0
+    _DEFAULT_TTS_VOLUME = 0.1
 
     def __init__(self) -> None:
         super().__init__('reception_orchestrator')
+        self._tts_volume = self._load_tts_volume()
 
         self._declare_parameters()
         self._load_parameters()
@@ -796,7 +799,7 @@ class ReceptionOrchestratorNode(Node):
             goal.text = cleaned
             goal.language = 'ja'
             goal.voice = ''
-            goal.volume = 1.0
+            goal.volume = self._tts_volume
             goal.speed = 0.0
             goal.pitch = 0.0
             goal.priority = 0
@@ -849,6 +852,17 @@ class ReceptionOrchestratorNode(Node):
                     self._tts_cancel_requested = False
 
         self._background.submit(_run)
+
+    def _load_tts_volume(self) -> float:
+        raw = os.environ.get('RECEPTION_TTS_VOLUME', str(self._DEFAULT_TTS_VOLUME)).strip()
+        try:
+            volume = float(raw)
+        except ValueError:
+            self.get_logger().warning(
+                f'Invalid RECEPTION_TTS_VOLUME={raw!r}; falling back to {self._DEFAULT_TTS_VOLUME}'
+            )
+            return self._DEFAULT_TTS_VOLUME
+        return max(0.0, min(1.0, volume))
 
     def _enqueue_or_speak_response(
         self,

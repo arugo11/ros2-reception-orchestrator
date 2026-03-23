@@ -13,6 +13,10 @@ def extract_json_object(raw: str) -> dict[str, Any] | None:
     text = (raw or '').strip()
     if not text:
         return None
+    if text.startswith('```'):
+        lines = text.splitlines()
+        if len(lines) >= 3 and lines[0].startswith('```') and lines[-1].startswith('```'):
+            text = '\n'.join(lines[1:-1]).strip()
     try:
         parsed = json.loads(text)
         return parsed if isinstance(parsed, dict) else None

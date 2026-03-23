@@ -1,5 +1,10 @@
 # Reception Model Selection Report (2026-03-10)
 
+> Historical note:
+> This report reflects the model-selection state on 2026-03-10.
+> Current launch defaults and shared catalog settings may differ.
+> Use `/workspaces/ros2-workspace-template/config/model_profiles.yaml` and `/workspaces/ros2-workspace-template/docs/current_reception_system_state_report_2026-03-23.md` as the current source of truth.
+
 ## Executive Summary
 
 現段階で最も妥当で、かつ実験上の根拠が最も強い受付スタック構成は次です。

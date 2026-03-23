@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
@@ -98,13 +99,37 @@ class ReceptionOrchestratorNodeV2(Node):
             scope=self._conversation_log_scope,
             flush_on_session_switch=self._conversation_log_flush_on_session_switch,
         )
+        self._client_callback_group = ReentrantCallbackGroup()
 
-        self._extract_client = ActionClient(self, ExtractTurn, self._extract_action_name)
-        self._chat_client = ActionClient(self, Chat, self._llm_chat_action_name)
-        self._tts_client = ActionClient(self, Speak, self._tts_action_name)
+        self._extract_client = ActionClient(
+            self,
+            ExtractTurn,
+            self._extract_action_name,
+            callback_group=self._client_callback_group,
+        )
+        self._chat_client = ActionClient(
+            self,
+            Chat,
+            self._llm_chat_action_name,
+            callback_group=self._client_callback_group,
+        )
+        self._tts_client = ActionClient(
+            self,
+            Speak,
+            self._tts_action_name,
+            callback_group=self._client_callback_group,
+        )
 
-        self._create_thread_client = self.create_client(CreateThread, '/chat_bridge/create_thread')
-        self._send_message_client = self.create_client(SendMessage, '/chat_bridge/send_message')
+        self._create_thread_client = self.create_client(
+            CreateThread,
+            '/chat_bridge/create_thread',
+            callback_group=self._client_callback_group,
+        )
+        self._send_message_client = self.create_client(
+            SendMessage,
+            '/chat_bridge/send_message',
+            callback_group=self._client_callback_group,
+        )
 
         self._utterance_subscription = self.create_subscription(
             Utterance,
@@ -664,7 +689,10 @@ class ReceptionOrchestratorNodeV2(Node):
         )
 
         try:
-            decision = self._normalize_semantic_decision(self._call_extract_direct_llm(turn), utterance_text=turn.text)
+            decision = self._normalize_semantic_decision(
+                self._call_extract_stage_action(turn),
+                utterance_text=turn.text,
+            )
             decision = self._normalize_semantic_decision(
                 self._apply_confirmation_rescue_if_needed(turn, decision),
                 utterance_text=turn.text,
@@ -679,7 +707,7 @@ class ReceptionOrchestratorNodeV2(Node):
             decision = self._normalize_semantic_decision(self._normalize_slot_operation_values(turn, decision), utterance_text=turn.text)
             self._publish_execution_event(cmd, ExecutionEvent.STATUS_SUCCEEDED, ExecutionEvent.REASON_NONE, 'extract_succeeded')
             self.get_logger().info(
-                '[LLM-S1] direct result '
+                '[LLM-S1] stage result '
                 f'seq={turn.turn_seq} speech_act={decision.speech_act} '
                 f'conf={decision.confidence:.2f} '
                 f'target_slot={decision.target_slot} '
@@ -687,23 +715,42 @@ class ReceptionOrchestratorNodeV2(Node):
             )
             return decision
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f'[LLM-S1] direct failed seq={turn.turn_seq}: {exc}')
+            self.get_logger().error(f'[LLM-S1] stage failed seq={turn.turn_seq}: {exc}')
             try:
+                decision = self._normalize_semantic_decision(self._call_extract_direct_llm(turn), utterance_text=turn.text)
                 decision = self._normalize_semantic_decision(
-                    self._call_extract_stage_action(turn),
+                    self._apply_confirmation_rescue_if_needed(turn, decision),
+                    utterance_text=turn.text,
+                )
+                if self._decision_needs_stage_rescue(decision):
+                    rescued = self._rescue_direct_semantic_decision(turn, decision)
+                    if rescued is not None:
+                        decision = self._normalize_semantic_decision(
+                            rescued,
+                            utterance_text=turn.text,
+                        )
+                    else:
+                        raise RuntimeError('direct extract requires semantic rescue')
+                decision = self._normalize_semantic_decision(
+                    self._refine_long_slot_decision(turn, decision),
+                    utterance_text=turn.text,
+                )
+                decision = self._normalize_semantic_decision(
+                    self._normalize_slot_operation_values(turn, decision),
                     utterance_text=turn.text,
                 )
                 self._publish_execution_event(
                     cmd,
                     ExecutionEvent.STATUS_SUCCEEDED,
                     ExecutionEvent.REASON_NONE,
-                    'extract_succeeded_via_stage_action',
+                    'extract_succeeded_via_direct_fallback',
                 )
                 self.get_logger().info(
-                    '[LLM-S1] action fallback result '
+                    '[LLM-S1] direct fallback result '
                     f'seq={turn.turn_seq} speech_act={decision.speech_act} '
                     f'conf={decision.confidence:.2f} '
-                    f'target_slot={decision.target_slot}'
+                    f'target_slot={decision.target_slot} '
+                    f'ops={self._short(json.dumps([self._operation_to_dict(op) for op in decision.operations], ensure_ascii=False))}'
                 )
                 return decision
             except Exception as action_exc:  # noqa: BLE001

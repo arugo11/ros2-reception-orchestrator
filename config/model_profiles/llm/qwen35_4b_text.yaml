@@ -1,4 +1,4 @@
-profile_name: qwen35_4b
+profile_name: qwen35_4b_text
 task: llm
 runner: vllm
 repo_id: Qwen/Qwen3.5-4B
@@ -17,4 +17,4 @@ startup_args:
 expected_languages:
   - ja
 latency_target_ms: 1300
-quality_notes: Larger Qwen3.5 candidate to improve structured Japanese understanding on 16GB single-GPU systems.
+quality_notes: Qwen3.5 4B text-first reception profile with thinking disabled at the request layer.

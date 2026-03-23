@@ -347,3 +347,77 @@ def test_apply_confirmation_rescue_overrides_broken_confirming_slot_update() -> 
 
     assert rescued.speech_act == 'affirm'
     assert rescued.operations[0].op == 'confirm_working_state'
+
+
+def test_call_extract_stage_prefers_stage_action_result() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._publish_execution_event = lambda *args, **kwargs: None
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None, warn=lambda *args, **kwargs: None)
+    node._short = lambda value: value
+    node._apply_confirmation_rescue_if_needed = lambda turn, decision: decision
+    node._decision_needs_stage_rescue = lambda decision: False
+    node._refine_long_slot_decision = lambda turn, decision: decision
+    node._normalize_slot_operation_values = lambda turn, decision: decision
+    node._normalize_semantic_decision = lambda decision, **kwargs: decision
+    node._call_extract_stage_action = lambda turn: SemanticDecisionData(
+        turn_seq=turn.turn_seq,
+        speech_act='inform',
+        target_slot='name',
+        ambiguity='low',
+        confidence=0.9,
+        evidence='stage',
+        operations=[BeliefOperationData(op='set_slot', slot='name', value='佐藤', confidence=0.9)],
+    )
+    node._call_extract_direct_llm = lambda turn: (_ for _ in ()).throw(
+        AssertionError('direct path should not be used')
+    )
+
+    turn = TurnEnvelopeData(
+        session_id='s',
+        turn_seq=1,
+        utterance_id='u',
+        text='私の名前は佐藤です。',
+        captured_during_tts=False,
+        asr_confidence=1.0,
+    )
+
+    decision = node._call_extract_stage(turn)
+
+    assert decision.evidence == 'stage'
+    assert decision.operations[0].value == '佐藤'
+
+
+def test_call_extract_stage_falls_back_to_direct_llm_when_stage_action_fails() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._publish_execution_event = lambda *args, **kwargs: None
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None, error=lambda *args, **kwargs: None, warn=lambda *args, **kwargs: None)
+    node._short = lambda value: value
+    node._apply_confirmation_rescue_if_needed = lambda turn, decision: decision
+    node._decision_needs_stage_rescue = lambda decision: False
+    node._refine_long_slot_decision = lambda turn, decision: decision
+    node._normalize_slot_operation_values = lambda turn, decision: decision
+    node._normalize_semantic_decision = lambda decision, **kwargs: decision
+    node._call_extract_stage_action = lambda turn: (_ for _ in ()).throw(RuntimeError('stage unavailable'))
+    node._call_extract_direct_llm = lambda turn: SemanticDecisionData(
+        turn_seq=turn.turn_seq,
+        speech_act='inform',
+        target_slot='affiliation',
+        ambiguity='low',
+        confidence=0.8,
+        evidence='direct',
+        operations=[BeliefOperationData(op='set_slot', slot='affiliation', value='東京大学', confidence=0.8)],
+    )
+
+    turn = TurnEnvelopeData(
+        session_id='s',
+        turn_seq=2,
+        utterance_id='u',
+        text='所属は東京大学です。',
+        captured_during_tts=False,
+        asr_confidence=1.0,
+    )
+
+    decision = node._call_extract_stage(turn)
+
+    assert decision.evidence == 'direct'
+    assert decision.operations[0].slot == 'affiliation'

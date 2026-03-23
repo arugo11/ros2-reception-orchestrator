@@ -43,7 +43,11 @@ def test_list_profiles_contains_supported_candidates():
     tts_profiles = {profile.profile_name for profile in list_profiles(_package_root(), 'tts')}
 
     assert 'qwen35_2b_gguf_q5km' in llm_profiles
+    assert 'qwen35_4b_text' in llm_profiles
+    assert 'nemotron_nano_9b_japanese' in llm_profiles
     assert 'qwen3_asr_gpu' in asr_profiles
+    assert 'qwen3_asr_0_6b_cpu' in asr_profiles
+    assert 'qwen3_asr_1_7b_gpu' in asr_profiles
     assert 'kotoba_whisper_gpu' in asr_profiles
     assert 'qwen3_tts_gpu' in tts_profiles
     assert 'speecht5_gpu' in tts_profiles
