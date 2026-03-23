@@ -2,12 +2,19 @@ reception_orchestrator:
   ros__parameters:
     discord.adapter_name: "discord"
     discord.parent_channel_id: ""
+    session.inactivity_reset_sec: 30
     asr.utterance_topic: "/asr/utterances"
     extract.action_name: "/reception/extract_turn"
     render.action_name: "/reception/render_dialog"
     tts.action_name: "/tts/speak"
     session.state_topic: "/reception/session_state"
     execution.event_topic: "/reception/events"
+    conversation.trace_topic: "/reception/conversation_trace"
+    conversation_log.enabled: true
+    conversation_log.output_dir: "/workspaces/ros2-workspace-template/logs/conversations"
+    conversation_log.format: "text"
+    conversation_log.scope: "utterances"
+    conversation_log.flush_on_session_switch: true
     response.followup_merge_window_ms: 1200
     queue.same_turn_replace: true
     semantic.confidence_threshold: 0.55

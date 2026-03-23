@@ -20,7 +20,10 @@ DialogAct = Literal[
     'ask_name',
     'ask_affiliation',
     'ask_purpose',
-    'confirm',
+    'clarify_name',
+    'clarify_affiliation',
+    'clarify_purpose',
+    'confirm_snapshot',
     'notify_waiting',
     'acknowledge_waiting',
     'relay_secretary',
@@ -36,6 +39,19 @@ SpeechAct = Literal[
     'complaint',
     'greeting',
     'unknown',
+]
+
+ResponseLanguage = Literal['ja', 'en', 'unknown']
+SlotName = Literal['name', 'affiliation', 'purpose', 'none']
+Ambiguity = Literal['low', 'medium', 'high']
+OperationType = Literal[
+    'set_slot',
+    'replace_slot',
+    'clear_slot',
+    'confirm_working_state',
+    'reject_confirmation',
+    'request_clarification',
+    'ignore',
 ]
 
 
@@ -65,31 +81,95 @@ class VisitorInfoData:
             purpose=self.purpose,
         )
 
+    def as_dict(self) -> dict[str, str]:
+        return {
+            'name': self.name,
+            'affiliation': self.affiliation,
+            'purpose': self.purpose,
+        }
+
+
+@dataclass(slots=True)
+class BeliefOperationData:
+    op: str = 'ignore'
+    slot: str = 'none'
+    value: str = ''
+    grounded_text: str = ''
+    confidence: float = 0.0
+
+    def normalized_slot(self) -> str:
+        slot = str(self.slot or 'none').strip().lower()
+        if slot in {'name', 'affiliation', 'purpose'}:
+            return slot
+        return 'none'
+
+
+@dataclass(slots=True)
+class SlotProvenanceData:
+    slot: str
+    source_turn_seq: int
+    grounded_text: str = ''
+    confidence: float = 0.0
+    updated_at: str = ''
+
+
+@dataclass(slots=True)
+class ChatOutboxItemData:
+    cursor: int
+    item_id: str
+    session_id: str
+    turn_seq: int
+    event_type: str
+    title: str
+    text: str
+    thread_id: str = ''
+    attempt_count: int = 0
+    status: str = 'pending'
+
+
+@dataclass(slots=True)
+class TraceEventData:
+    event_type: str
+    text: str = ''
+    dialog_act: str = ''
+    role: str = 'system'
+    payload_json: str = ''
+
 
 @dataclass(slots=True)
 class SemanticDecisionData:
     turn_seq: int
     speech_act: str = 'unknown'
-    slot_patch: VisitorInfoData = field(default_factory=VisitorInfoData)
-    correction_target: str = 'none'
-    ignore_input: bool = False
+    detected_language: str = 'unknown'
+    target_slot: str = 'none'
+    ambiguity: str = 'high'
+    requires_confirmation: bool = False
     confidence: float = 0.0
     evidence: str = ''
+    operations: list[BeliefOperationData] = field(default_factory=list)
+    grounded_segments: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class SessionStateData:
     session_id: str
     phase: Phase = 'collecting'
-    visitor_info: VisitorInfoData = field(default_factory=VisitorInfoData)
-    pending_confirmation: VisitorInfoData = field(default_factory=VisitorInfoData)
+    response_language: str = 'ja'
+    working_info: VisitorInfoData = field(default_factory=VisitorInfoData)
+    committed_info: VisitorInfoData = field(default_factory=VisitorInfoData)
+    focus_slot: str = 'name'
+    last_system_act: str = ''
+    pending_clarification_slot: str = ''
+    working_provenance: dict[str, SlotProvenanceData] = field(default_factory=dict)
+    turn_journal: list[dict[str, object]] = field(default_factory=list)
+    chat_outbox: list[ChatOutboxItemData] = field(default_factory=list)
+    chat_outbox_cursor: int = 0
+    chat_delivery_state: str = 'idle'
     latest_applied_turn: int = 0
     version: int = 0
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
     discord_thread_id: str = ''
     discord_channel_id: str = ''
-    discord_create_requested: bool = False
-    confirmed_posted: bool = False
 
     def touch(self) -> None:
         self.last_activity_at = datetime.now(tz=UTC)
@@ -110,7 +190,9 @@ class ReducerOutcomeData:
     session_id: str
     turn_seq: int
     dialog_act: DialogAct
-    commands: list[OrchestratorCommandData] = field(default_factory=list)
+    trace_events: list[TraceEventData] = field(default_factory=list)
+    outbox_items: list[ChatOutboxItemData] = field(default_factory=list)
+    applied_operations: list[BeliefOperationData] = field(default_factory=list)
     should_render_response: bool = True
 
 
