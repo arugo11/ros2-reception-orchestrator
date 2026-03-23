@@ -15,11 +15,25 @@ from ros2_vllm_interfaces.action import Chat
 from .llm_stage_utils import invoke_chat_action
 
 
-_STAGE2_SYSTEM_PROMPT = (
-    'You are a polite Japanese university receptionist assistant. '
-    'Generate one concise spoken response in Japanese. '
-    'No JSON. No markdown. Keep to 1-2 sentences.'
-)
+def _sanitize_response_language(value: object) -> str:
+    candidate = str(value or 'ja').strip().lower()
+    if candidate == 'en':
+        return 'en'
+    return 'ja'
+
+
+def _stage2_system_prompt(response_language: str) -> str:
+    if _sanitize_response_language(response_language) == 'en':
+        return (
+            'You are a polite university receptionist assistant. '
+            'Generate one concise spoken response in English. '
+            'No JSON. No markdown. Keep to 1-2 sentences.'
+        )
+    return (
+        'You are a polite Japanese university receptionist assistant. '
+        'Generate one concise spoken response in Japanese. '
+        'No JSON. No markdown. Keep to 1-2 sentences.'
+    )
 
 
 class ResponsePlannerServer(Node):
@@ -55,7 +69,14 @@ class ResponsePlannerServer(Node):
     def _execute(self, goal_handle: Any) -> RenderDialog.Result:
         req = goal_handle.request
         result = RenderDialog.Result()
-        fallback = _fallback_dialog_text(req.dialog_act, req.visitor_info.name, req.visitor_info.affiliation, req.visitor_info.purpose)
+        response_language = _sanitize_response_language(req.response_language)
+        fallback = _fallback_dialog_text(
+            req.dialog_act,
+            req.working_info.name,
+            req.working_info.affiliation,
+            req.working_info.purpose,
+            response_language,
+        )
 
         if req.dialog_act == 'relay_secretary':
             result.text = req.secretary_reply_text.strip() or fallback
@@ -65,11 +86,17 @@ class ResponsePlannerServer(Node):
 
         prompt = (
             'Render spoken response for receptionist flow.\n'
+            f'response_language={response_language}\n'
             f'dialog_act={req.dialog_act}\n'
             f'phase={req.phase}\n'
-            f'name={req.visitor_info.name}\n'
-            f'affiliation={req.visitor_info.affiliation}\n'
-            f'purpose={req.visitor_info.purpose}\n'
+            f'focus_slot={req.focus_slot}\n'
+            f'pending_clarification_slot={req.pending_clarification_slot}\n'
+            f'working_name={req.working_info.name}\n'
+            f'working_affiliation={req.working_info.affiliation}\n'
+            f'working_purpose={req.working_info.purpose}\n'
+            f'committed_name={req.committed_info.name}\n'
+            f'committed_affiliation={req.committed_info.affiliation}\n'
+            f'committed_purpose={req.committed_info.purpose}\n'
             f'latest_user_text={req.latest_user_text}\n'
             f'fallback={fallback}\n'
         )
@@ -80,7 +107,7 @@ class ResponsePlannerServer(Node):
                 action_name=self._chat_action_name,
                 session_id=f'{req.session_id}:render:{req.turn_seq}',
                 user_message=prompt,
-                system_prompt=_STAGE2_SYSTEM_PROMPT,
+                system_prompt=_stage2_system_prompt(response_language),
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
                 stateless=True,
@@ -98,7 +125,34 @@ class ResponsePlannerServer(Node):
         return result
 
 
-def _fallback_dialog_text(dialog_act: str, name: str, affiliation: str, purpose: str) -> str:
+def _fallback_dialog_text(dialog_act: str, name: str, affiliation: str, purpose: str, response_language: str) -> str:
+    if _sanitize_response_language(response_language) == 'en':
+        if dialog_act == 'ask_name':
+            return 'May I have your name, please?'
+        if dialog_act == 'ask_affiliation':
+            return 'May I ask your affiliation, please?'
+        if dialog_act == 'ask_purpose':
+            return 'What brings you here today?'
+        if dialog_act == 'clarify_name':
+            return 'I may have misheard your name. Could you please tell me your name once more?'
+        if dialog_act == 'clarify_affiliation':
+            return 'I may have misheard your affiliation. Could you please tell me your affiliation once more?'
+        if dialog_act == 'clarify_purpose':
+            return 'I may have misheard your purpose. Could you please tell me what brings you here today once more?'
+        if dialog_act == 'confirm_snapshot':
+            n = name or 'unknown'
+            a = affiliation or 'unknown'
+            p = purpose or 'unknown'
+            return f'Let me confirm: your name is {n}, your affiliation is {a}, and your purpose is {p}. Is that correct?'
+        if dialog_act == 'notify_waiting':
+            return 'I have notified the person in charge. Please wait for a moment.'
+        if dialog_act == 'acknowledge_waiting':
+            return 'The person in charge has already been notified. Please wait for a moment.'
+        if dialog_act == 'retry':
+            return 'Could you please say that again?'
+        if dialog_act == 'relay_secretary':
+            return 'A reply has arrived from the person in charge.'
+        return 'Please wait for a moment.'
     if dialog_act == 'ask_name':
         return 'お名前を教えてください。'
     if dialog_act == 'ask_affiliation':
@@ -106,7 +160,13 @@ def _fallback_dialog_text(dialog_act: str, name: str, affiliation: str, purpose:
         return f'{honor}ご所属を教えてください。'
     if dialog_act == 'ask_purpose':
         return '本日のご用件を教えてください。'
-    if dialog_act == 'confirm':
+    if dialog_act == 'clarify_name':
+        return 'お名前を正しく伺えなかったため、もう一度お名前をお願いいたします。'
+    if dialog_act == 'clarify_affiliation':
+        return 'ご所属を正しく伺えなかったため、もう一度ご所属をお願いいたします。'
+    if dialog_act == 'clarify_purpose':
+        return 'ご用件を正しく伺えなかったため、もう一度ご用件をお願いいたします。'
+    if dialog_act == 'confirm_snapshot':
         n = name or '未取得'
         a = affiliation or '未取得'
         p = purpose or '未取得'

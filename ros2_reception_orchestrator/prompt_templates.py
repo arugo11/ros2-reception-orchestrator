@@ -50,6 +50,9 @@ RECEPTION_SLOT_NORMALIZE_SYSTEM_PROMPT = (
     '推測は禁止です。最新発話に明示されていない値を補ってはいけません。'
     'name は人の呼称、affiliation は組織や部署、purpose は来訪理由です。'
     '候補がその field の意味に合わない場合は null にしてください。'
+    '候補の先頭や末尾にある言いよどみ、ためらい、相づち、不要な丁寧表現は除去してください。'
+    'name では「えっと」「あの」「はい」「私の名前は」などを取り除き、名前本体だけを返してください。'
+    'affiliation と purpose でも、意味に不要なフィラーや句読点は取り除いて構いません。'
     '人名や自己紹介句を purpose にしてはいけません。組織名を name にしてはいけません。'
     '訪問先の相手や面会対象の肩書きを visitor name にしてはいけません。'
     '一般ラベル、プレースホルダ、曖昧語は null にしてください。'
@@ -302,6 +305,9 @@ def build_reception_confirmation_rescue_prompt(
             '訂正なら speech_act=correction または deny とし、correction.target を返してください。',
             '判別不能なら speech_act=unknown にしてください。',
             '推測禁止。slot 値は返しません。',
+            '「うん」「はい」「OK」「オーケー」「合ってます」「その通り」「大丈夫です」のような自然な受諾表現は affirm とみなしてください。',
+            '確認文に対して「合ってる」「それで大丈夫」のように受諾を言い換えた発話も affirm にしてください。',
+            '一方で、新しい名前・所属・用件が明示されていれば、受諾より correction を優先してください。',
             f'current_name={pending.name or "null"}',
             f'current_affiliation={pending.affiliation or "null"}',
             f'current_purpose={pending.purpose or "null"}',

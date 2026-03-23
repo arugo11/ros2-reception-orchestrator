@@ -1,5 +1,9 @@
 # 受付対応AIエージェントシステム, デモ版仕様書
 
+注記:
+この文書は初期設計書をベースに保守しているが, 現在の実装に合わせて古い前提を整理している.
+現行の起動構成と運用メモは `/workspaces/ros2-workspace-template/docs/reception_scenario_system.md` を優先して参照すること.
+
 ## 1. 文書の目的
 
 本書は, 大学の秘書課, 法人部への来訪者に対する一次受付を行う, 音声対話型AIエージェントシステムのデモ版を実装するための仕様書である.
@@ -9,9 +13,10 @@
 
 ## 2. システム概要
 
-本システムは, 受付に設置されたマイク, PC, スピーカーのみで動作する, 画面なしの音声受付デモである.
-来訪者が受付に話しかけると, ASRが発話を認識し, 単一の受付用LLMが発話理解と返答文生成を同時に行い, TTSが音声として再生する.
-Discordスレッド作成, スレッド更新, 秘書課からの返信の取り込み, 追加質問の要否判断は, LLMの構造化出力を受けたオーケストレータの状態機械が行う.
+本システムは, 受付に設置されたマイク, PC, スピーカーのみで動作する音声受付デモである.
+来訪者が受付に話しかけると, ASRが発話を認識し, オーケストレータがセッション状態を更新する.
+LLM処理は意味抽出段と応答生成段に分かれ, 前者が構造化判断を返し, 後者が来訪者向け応答文を生成する.
+Discordスレッド作成, スレッド更新, 秘書課からの返信の取り込み, 追加質問の要否判断は, オーケストレータの状態機械が担当する.
 
 来訪者から最低限取得すべき情報は, 名前, 所属, 来訪目的の3項目である.
 これらが取得できた時点で, 内容を復唱確認したうえで, Discord上の来訪者専用スレッドへ定型フォーマットで送信する.
@@ -53,7 +58,7 @@ Discordスレッド作成, スレッド更新, 秘書課からの返信の取り
 3. vLLM統合パッケージ
 4. Discord通信用チャットSDK対応パッケージ
 
-また, 現時点で明示的に結線済みなのは主に ASR の `mic_input_node -> asr_streaming_node` 系であり, `ASR -> LLM -> TTS -> Chat` を全体として束ねるオーケストレータノードは未実装である, という前提で設計する.
+現在のワークスペースでは, `ASR -> orchestrator -> LLM -> TTS -> Chat` の統合構成が実装済みであり, 単体ノード群を `reception_bringup.launch.py` から一括起動できる.
 
 ## 5. 開発方針
 
@@ -66,11 +71,11 @@ Discordスレッド作成, スレッド更新, 秘書課からの返信の取り
 
 - オーケストレーション本体: `rclpy` + `asyncio` + 明示的状態機械
 - データモデル: 標準 `dataclasses`
-- 監視, 判断担当LLMの構造化出力: JSON + 明示パース
-- 受付用LLM呼び出し: 既存 `ros2_vllm` の `/llm/chat` または `/llm/stream/request` を利用
+- 監視, 判断担当LLMの構造化出力: `ExtractTurn` action による JSON 相当の構造化出力
+- 応答生成LLM呼び出し: `RenderDialog` action を介した短文応答生成
 - Discord送信: 既存 `ros2_chat` の `/chat_bridge/create_thread`, `/chat_bridge/send_message` を利用
 - TTS再生: 既存 `tts_server` の `/tts/speak` action を利用し, 必要に応じて `tts_server` 側のローカル再生機能を有効化する
-- ASR入力: 既存 `asr_streaming_node` の `/asr/listen` action を正規入力として利用する
+- ASR入力: 既存 `asr_streaming_node` の `/asr/utterances` を正規入力として利用する
 
 ### 5.2 推奨理由
 
@@ -93,9 +98,11 @@ LangGraphのようなグラフ実行系は, durable execution, human-in-the-loop
 ```mermaid
 flowchart LR
     MIC[Microphone] --> ASR[mic_input_node / asr_streaming_node]
-    ASR --> ORCH[reception_orchestrator_node]
-    ORCH -->|turn request| A[受付用LLM]
-    A --> ORCH
+    ASR --> ORCH[reception_orchestrator]
+    ORCH -->|ExtractTurn| EXTRACT[semantic_extractor_server]
+    EXTRACT --> ORCH
+    ORCH -->|RenderDialog| RENDER[response_planner_server]
+    RENDER --> ORCH
     ORCH --> TTS[tts_server]
     ORCH --> CHAT[chat_bridge]
     CHAT --> DISCORD[Discord thread]
@@ -106,18 +113,16 @@ flowchart LR
 
 ## 7. コンポーネント責務
 
-### 7.1 受付用LLM
+### 7.1 意味抽出段と応答生成段
 
-受付用LLMは, 来訪者との自然な対話と, 発話の意味理解を同時に担当する.
-責務は以下に限定する.
+現行実装では, LLM責務は以下の 2 段に分かれる.
 
-- ASR結果を受けて, 名前, 所属, 来訪目的, 訂正, 確認可否を JSON で返す
-- 同時に, 来訪者へそのまま読み上げる短い返答文を生成する
-- 返答は, 丁寧で自然な受付口調とし, 1〜2文に収める
-- 複数質問や内部語を避け, 今必要なことだけを話す
-- 秘書課から到着した返信を, 来訪者向け自然文にほぼそのまま変換して返答する
+- 意味抽出段
+  - ASR結果を受けて, speech act, 言語, slot 更新候補, clarification 要否, confirmation 可否を構造化して返す
+- 応答生成段
+  - 現在状態に応じて, 来訪者へ読み上げる短い返答文を生成する
 
-受付用LLMは, Discord送信, スレッド作成, 状態更新, phase 遷移, 重要フラグ判定などのツール実行責務を持たない.
+どちらの段も, Discord送信, スレッド作成, 状態更新, phase 遷移などの実行責務は持たない.
 
 ### 7.2 オーケストレータの判断責務
 
@@ -130,9 +135,9 @@ Discord通知, スレッド作成, phase 遷移, 重複送信防止, stale 応�
 
 - セッション開始, 継続, 終了の管理
 - 収集済み情報の構造化状態管理
-- `/asr/listen` action result 受信と発話確定テキストの取り込み
-- 受付用LLM呼び出しとTTS出力制御
-- LLM構造化出力の検証と結果反映
+- `/asr/utterances` 受信と発話確定テキストの取り込み
+- 意味抽出 action / 応答生成 action の呼び出しとTTS出力制御
+- 構造化出力の検証と結果反映
 - Discordスレッド作成, 更新, 返信受信処理
 - 復唱確認フロー制御
 - 無音タイムアウトによるセッションリセット
@@ -143,7 +148,7 @@ Discord通知, スレッド作成, phase 遷移, 重複送信防止, stale 応�
 
 ### 8.1 セッション開始条件
 
-- `/asr/listen` の初回有効確定発話を受信した時点で新規セッションを開始する
+- `/asr/utterances` の初回有効確定発話を受信した時点で新規セッションを開始する
 - デモ版では同時セッションは扱わない
 - セッションは常に1件だけ存在する
 
@@ -195,7 +200,7 @@ class SessionState:
 ```mermaid
 stateDiagram-v2
     [*] --> idle
-    idle --> collecting: 初回 /asr/listen 確定発話
+    idle --> collecting: 初回 /asr/utterances 確定発話
     collecting --> collecting: 情報不足, 追加質問
     collecting --> confirming: 必須3項目が暫定充足
     confirming --> collecting: 来訪者が訂正
@@ -210,7 +215,7 @@ stateDiagram-v2
 
 ### 10.1 話し方
 
-受付用LLMの出力スタイルは, 丁寧, 愛想がよい, 受付らしい, 短く明快, を基本とする.
+応答生成段の出力スタイルは, 丁寧, 愛想がよい, 受付らしい, 短く明快, を基本とする.
 冗長な説明は避ける.
 来訪者が高齢者や不慣れな話し方であっても, 急かさず, 優しく聞き返す.
 
@@ -218,7 +223,7 @@ stateDiagram-v2
 
 基本フローは以下とする.
 
-1. `/asr/listen` の初回確定発話を受ける
+1. `/asr/utterances` の初回確定発話を受ける
 2. 名前, 所属, 来訪目的のうち不足項目を順次埋める
 3. 3項目が揃ったら復唱確認する
 4. 確認が取れたらDiscordスレッドに通知する
@@ -237,7 +242,7 @@ Discord送信前に, 取得済み3項目を必ず音声で復唱確認する.
 
 ### 10.4 追加質問
 
-必須3項目以外の情報が必要になった場合は, 秘書課からDiscordスレッド上で質問内容を返してもらい, その内容を対話担当LLMが自然な受付文にして来訪者へ再質問する.
+必須3項目以外の情報が必要になった場合は, 秘書課からDiscordスレッド上で質問内容を返してもらい, その内容を応答生成段が自然な受付文にして来訪者へ再質問する.
 
 ### 10.5 秘書課返信の扱い
 
@@ -277,7 +282,7 @@ Discord送信前に, 取得済み3項目を必ず音声で復唱確認する.
 
 ### 12.1 スレッド作成タイミング
 
-初回 `/asr/listen` 確定発話を受信した直後に, 非同期で専用スレッドを作成する.
+初回 `/asr/utterances` 確定発話を受信した直後に, 非同期で専用スレッドを作成する.
 thread 作成失敗時も音声主経路は継続し, 後続の会話処理を止めない.
 
 ### 12.2 初回投稿フォーマット
@@ -347,9 +352,10 @@ thread 作成失敗時も音声主経路は継続し, 後続の会話処理を�
 
 | 種別 | 名前 | 用途 |
 |---|---|---|
-| Action | `/asr/listen` | 発話認識の取得 |
-| Action | `/llm/chat` | 対話担当LLM呼び出し |
-| Topic or Action | `/llm/stream/request`, `/llm/stream` | ストリーミング応答利用時 |
+| Topic | `/asr/utterances` | 確定発話の取得 |
+| Action | `/reception/extract_turn` | 意味抽出段の呼び出し |
+| Action | `/reception/render_dialog` | 応答生成段の呼び出し |
+| Action | `/llm/chat` | LLM backend 呼び出し |
 | Action | `/tts/speak` | 音声発話 |
 | Service | `/chat_bridge/create_thread` | Discordスレッド作成 |
 | Service | `/chat_bridge/send_message` | Discord送信 |
@@ -362,60 +368,65 @@ thread 作成失敗時も音声主経路は継続し, 後続の会話処理を�
 
 ### 14.3 新規ノードの主な責務
 
-- `/asr/listen` action result を待ち受け, 発話確定をトリガに会話処理を進める
-- 対話担当LLMへ要求を送る
+- `/asr/utterances` を待ち受け, 発話確定をトリガに会話処理を進める
+- 意味抽出段と応答生成段へ要求を送る
 - 応答をTTSへ送る
 - Discordスレッド作成と更新を行う
 - Discord返信を購読し, 対話へ反映する
 - セッションタイムアウトを監視する
 
-### 14.4 推奨追加インタフェース
-
-実装簡易化のため, オーケストレータ内部だけで閉じるより, 将来的には以下の独自インタフェース追加を推奨する.
+### 14.4 現行で保持している主要インタフェース
 
 | 種別 | 例 | 目的 |
 |---|---|---|
 | Topic | `/reception/session_state` | 管理UIやデバッグ用状態配信 |
-| Topic | `/reception/extracted_info` | 抽出済み構造化情報の配信 |
-| Service | `/reception/reset_session` | 強制リセット |
 | Topic | `/reception/events` | 主要イベントの監査ログ |
-
-デモ版では必須ではないが, 実装しておくと拡張が容易になる.
+| Topic | `/reception/conversation_trace` | 会話トレースと内部イベントの可視化 |
 
 ## 15. オーケストレータ内部モジュール構成
 
 オーケストレータは単一ノードでよいが, コード上は責務分離する.
 
 ```text
-reception_orchestrator/
+ros2_reception_orchestrator/
   __init__.py
-  node.py
-  session_manager.py
-  state_models.py
+  node_v2.py
+  session_reducer_v2.py
+  turn_ingestor_v2.py
+  effect_executor_v2.py
+  semantic_extractor_server.py
+  response_planner_server.py
   dialog_adapter.py
   supervisor_adapter.py
   discord_adapter.py
-  info_extractor.py
+  conversation_trace.py
+  conversation_log.py
+  state_models.py
+  v2_types.py
   prompt_templates.py
   formatters.py
   dedup.py
 ```
 
-### 15.1 `session_manager.py`
+### 15.1 `node_v2.py`
 
-セッション状態の生成, 更新, 終了, リセットを担当する.
+現行の `reception_orchestrator` エントリポイントであり, 各 backend と V2 reducer を束ねる.
 
-### 15.2 `state_models.py`
+### 15.2 `session_reducer_v2.py` / `turn_ingestor_v2.py`
 
-標準 `dataclasses` で `VisitorInfo`, `SessionState`, `SupervisorDecision` を定義する.
+turn 単位の正規化, belief operation の適用, phase 遷移, outbox 生成を担当する.
 
-### 15.3 `dialog_adapter.py`
+### 15.3 `state_models.py` / `v2_types.py`
 
-対話担当LLMへのプロンプト生成と呼び出しを行う.
+状態と message 変換のための dataclass 群を定義する.
 
-### 15.4 `supervisor_adapter.py`
+### 15.4 `dialog_adapter.py` / `response_planner_server.py`
 
-監視, 判断担当LLMの呼び出しを行う. 出力は JSON 文字列として受け, オーケストレータ側で構造化データへ変換する.
+応答生成段へのプロンプト生成と action server を担当する.
+
+### 15.5 `supervisor_adapter.py` / `semantic_extractor_server.py`
+
+意味抽出段の呼び出しと構造化判断の整形を行う.
 
 推奨出力例を以下に示す.
 
@@ -428,11 +439,15 @@ class SupervisorDecision:
     discord_update_summary: str | None = None
 ```
 
-### 15.5 `discord_adapter.py`
+### 15.6 `discord_adapter.py`
 
 スレッド作成, メッセージ送信, incoming購読, 重複返信除外を担当する.
 
-### 15.6 `info_extractor.py`
+### 15.7 `conversation_trace.py` / `conversation_log.py`
+
+会話トレース生成とセッションログ保存を担当する.
+
+### 15.8 `info_extractor.py`
 
 ルールベースで最低限の情報抽出を行う. ここでは LLMを必須にしない. 例として, `私は株式会社Xの山田です`, `ABC社の田中です`, `面会に来ました` などから, 3項目候補を抽出する.
 

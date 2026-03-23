@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Any
 
@@ -13,19 +12,70 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from reception_interfaces.action import ExtractTurn
+from reception_interfaces.msg import BeliefOperation
 from reception_interfaces.msg import SemanticDecision
-from reception_interfaces.msg import VisitorInfo
 from ros2_vllm_interfaces.action import Chat
 
 from .llm_stage_utils import extract_json_object
 from .llm_stage_utils import invoke_chat_action
+from .prompt_templates import RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA
+from .prompt_templates import RECEPTION_REPAIR_SYSTEM_PROMPT
+from .prompt_templates import RECEPTION_SLOT_EXTRACT_JSON_SCHEMA
+from .prompt_templates import build_reception_confirmation_rescue_prompt
+from .prompt_templates import build_reception_slot_extract_prompt
+from .state_models import SessionSnapshot
+from .state_models import VisitorInfo
 
+
+_OPERATION_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'op': {
+            'type': 'string',
+            'enum': [
+                'set_slot',
+                'replace_slot',
+                'clear_slot',
+                'confirm_working_state',
+                'reject_confirmation',
+                'request_clarification',
+                'ignore',
+            ],
+        },
+        'slot': {
+            'type': 'string',
+            'enum': ['name', 'affiliation', 'purpose', 'none'],
+        },
+        'value': {'type': ['string', 'null']},
+        'grounded_text': {'type': ['string', 'null']},
+        'confidence': {'type': 'number'},
+    },
+    'required': ['op', 'slot', 'value', 'grounded_text', 'confidence'],
+    'additionalProperties': False,
+}
 
 _STAGE1_SYSTEM_PROMPT = (
-    'You are a strict receptionist semantic extractor. '
+    'You are a strict multilingual receptionist semantic extractor and belief-operation planner. '
     'Return JSON only. Do not output prose. '
-    'Infer speech_act and slot_updates from the latest utterance. '
-    'Never fabricate names/affiliations/purposes if not present.'
+    'Your job is to decide how the latest utterance should edit the receptionist belief state. '
+    'Never emit free-form slot dumps when a narrower edit is sufficient. '
+    'Use operations as the primary output. '
+    'Prefer the smallest safe edit that is grounded in the utterance and state context. '
+    'Do not overwrite unrelated slots just because one candidate phrase could fit multiple slots. '
+    'If the user is correcting or revising previous information, prefer replace_slot on the most plausible target slot. '
+    'If the utterance is ambiguous, incomplete, or low-grounding, emit request_clarification rather than guessing. '
+    'detected_language means the language the receptionist should use to reply: ja, en, or unknown. '
+    'current_response_language is only a weak hint. Always prioritize the latest utterance. '
+    'Use ja for mainly Japanese utterances, en for mainly English utterances, and unknown when it is too ambiguous to judge. '
+    'Do not infer language from acronyms or proper nouns alone. '
+    'target_slot should identify the slot most relevant to the utterance when possible. '
+    'ambiguity must be low, medium, or high. '
+    'requires_confirmation should be true when the safest next step is a slot-specific clarification or explicit confirmation. '
+    'Never fabricate names, affiliations, or purposes if the utterance does not support them. '
+    'Greeting-only utterances should usually produce ignore, not slot writes. '
+    'In confirming phase, clear acceptance should usually produce confirm_working_state, not a fake slot edit. '
+    'When the state focus is a specific slot and the user gives a natural correction, update only that slot unless the utterance clearly supplies other slots too. '
+    'If the utterance clearly provides exactly one slot value, operations must include one grounded set_slot or replace_slot for that slot instead of an empty list.'
 )
 
 _STAGE1_JSON_SCHEMA = json.dumps(
@@ -36,25 +86,41 @@ _STAGE1_JSON_SCHEMA = json.dumps(
                 'type': 'string',
                 'enum': ['inform', 'affirm', 'deny', 'correction', 'question', 'complaint', 'greeting', 'unknown'],
             },
-            'slot_updates': {
-                'type': 'object',
-                'properties': {
-                    'name': {'type': ['string', 'null']},
-                    'affiliation': {'type': ['string', 'null']},
-                    'purpose': {'type': ['string', 'null']},
-                },
-                'required': ['name', 'affiliation', 'purpose'],
-                'additionalProperties': False,
-            },
-            'correction_target': {
+            'detected_language': {
                 'type': 'string',
-                'enum': ['none', 'name', 'affiliation', 'purpose', 'all'],
+                'enum': ['ja', 'en', 'unknown'],
             },
-            'ignore_input': {'type': 'boolean'},
+            'target_slot': {
+                'type': 'string',
+                'enum': ['name', 'affiliation', 'purpose', 'none'],
+            },
+            'ambiguity': {
+                'type': 'string',
+                'enum': ['low', 'medium', 'high'],
+            },
+            'requires_confirmation': {'type': 'boolean'},
             'confidence': {'type': 'number'},
             'evidence': {'type': 'string'},
+            'grounded_segments': {
+                'type': 'array',
+                'items': {'type': 'string'},
+            },
+            'operations': {
+                'type': 'array',
+                'items': _OPERATION_SCHEMA,
+            },
         },
-        'required': ['speech_act', 'slot_updates', 'correction_target', 'ignore_input', 'confidence', 'evidence'],
+        'required': [
+            'speech_act',
+            'detected_language',
+            'target_slot',
+            'ambiguity',
+            'requires_confirmation',
+            'confidence',
+            'evidence',
+            'grounded_segments',
+            'operations',
+        ],
         'additionalProperties': False,
     },
     ensure_ascii=False,
@@ -69,7 +135,7 @@ class SemanticExtractorServer(Node):
 
         self.declare_parameter('llm.chat_action_name', '/llm/chat')
         self.declare_parameter('llm.temperature', 0.0)
-        self.declare_parameter('llm.max_tokens', 180)
+        self.declare_parameter('llm.max_tokens', 220)
         self.declare_parameter('extract.action_name', '/reception/extract_turn')
 
         self._chat_action_name = str(self.get_parameter('llm.chat_action_name').value)
@@ -140,7 +206,7 @@ class SemanticExtractorServer(Node):
                     user_message=repair_prompt,
                     system_prompt='Return fixed JSON only.',
                     temperature=0.0,
-                    max_tokens=min(self._max_tokens, 140),
+                    max_tokens=min(self._max_tokens, 180),
                     stateless=True,
                     response_json_schema=_STAGE1_JSON_SCHEMA,
                     total_timeout_sec=12.0,
@@ -161,6 +227,10 @@ class SemanticExtractorServer(Node):
             self.get_logger().warn(
                 f'stage1 heuristic fallback used turn={req.turn.turn_seq} text={req.turn.text}'
             )
+        elif self._needs_semantic_rescue(req, payload):
+            rescued_payload = self._semantic_rescue_payload(req, payload)
+            if self._usable_payload(rescued_payload):
+                payload = rescued_payload
 
         decision = self._to_decision(req.turn.turn_seq, payload)
         result.decision = decision
@@ -173,176 +243,343 @@ class SemanticExtractorServer(Node):
         return (
             'Task: semantic extraction for reception flow.\n'
             f'phase={req.phase}\n'
-            f'current_name={req.visitor_info.name}\n'
-            f'current_affiliation={req.visitor_info.affiliation}\n'
-            f'current_purpose={req.visitor_info.purpose}\n'
-            f'pending_name={req.pending_confirmation.name}\n'
-            f'pending_affiliation={req.pending_confirmation.affiliation}\n'
-            f'pending_purpose={req.pending_confirmation.purpose}\n'
+            f'working_name={req.working_info.name}\n'
+            f'working_affiliation={req.working_info.affiliation}\n'
+            f'working_purpose={req.working_info.purpose}\n'
+            f'committed_name={req.committed_info.name}\n'
+            f'committed_affiliation={req.committed_info.affiliation}\n'
+            f'committed_purpose={req.committed_info.purpose}\n'
+            f'focus_slot={req.focus_slot}\n'
+            f'last_system_act={req.last_system_act}\n'
+            f'pending_clarification_slot={req.pending_clarification_slot}\n'
+            f'current_response_language={req.current_response_language}\n'
             f'latest_utterance={req.turn.text}\n'
+            'Examples:\n'
+            '- context: phase=collecting focus_slot=name latest_utterance=こんにちは。\n'
+            '  output: {"speech_act":"greeting","detected_language":"ja","target_slot":"none","ambiguity":"low","requires_confirmation":false,"confidence":0.92,"evidence":"greeting only","grounded_segments":["こんにちは。"],"operations":[{"op":"ignore","slot":"none","value":null,"grounded_text":"こんにちは。","confidence":0.92}]}\n'
+            '- context: phase=collecting focus_slot=name latest_utterance=私の名前は島中です。\n'
+            '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"name","ambiguity":"low","requires_confirmation":false,"confidence":0.93,"evidence":"states the visitor name","grounded_segments":["島中"],"operations":[{"op":"set_slot","slot":"name","value":"島中","grounded_text":"島中","confidence":0.93}]}\n'
+            '- context: phase=collecting focus_slot=affiliation latest_utterance=所属は菅屋研究室です。\n'
+            '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"affiliation","ambiguity":"low","requires_confirmation":false,"confidence":0.92,"evidence":"states the affiliation","grounded_segments":["菅屋研究室"],"operations":[{"op":"set_slot","slot":"affiliation","value":"菅屋研究室","grounded_text":"菅屋研究室","confidence":0.92}]}\n'
+            '- context: phase=collecting focus_slot=purpose latest_utterance=用件は打ち合わせです。\n'
+            '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"purpose","ambiguity":"low","requires_confirmation":false,"confidence":0.91,"evidence":"states the visit purpose","grounded_segments":["打ち合わせ"],"operations":[{"op":"set_slot","slot":"purpose","value":"打ち合わせ","grounded_text":"打ち合わせ","confidence":0.91}]}\n'
+            '- context: phase=confirming latest_utterance=はい。\n'
+            '  output: {"speech_act":"affirm","detected_language":"ja","target_slot":"none","ambiguity":"low","requires_confirmation":false,"confidence":0.95,"evidence":"accepts current snapshot","grounded_segments":["はい。"],"operations":[{"op":"confirm_working_state","slot":"none","value":null,"grounded_text":"はい。","confidence":0.95}]}\n'
+            '- context: phase=collecting focus_slot=affiliation last_system_act=clarify_affiliation latest_utterance=あ、それ違いますね。それじゃなくて、えっと、菅屋研究室です。\n'
+            '  output: {"speech_act":"correction","detected_language":"ja","target_slot":"affiliation","ambiguity":"medium","requires_confirmation":false,"confidence":0.82,"evidence":"revises the affiliation answer","grounded_segments":["菅屋研究室"],"operations":[{"op":"replace_slot","slot":"affiliation","value":"菅屋研究室","grounded_text":"菅屋研究室","confidence":0.82}]}\n'
+            '- context: phase=collecting focus_slot=purpose latest_utterance=I have a meeting.\n'
+            '  output: {"speech_act":"inform","detected_language":"en","target_slot":"purpose","ambiguity":"low","requires_confirmation":false,"confidence":0.85,"evidence":"states visit purpose","grounded_segments":["I have a meeting"],"operations":[{"op":"set_slot","slot":"purpose","value":"meeting","grounded_text":"I have a meeting","confidence":0.85}]}\n'
         )
 
     @staticmethod
     def _usable_payload(payload: dict[str, Any] | None) -> bool:
         if not isinstance(payload, dict):
             return False
-        required = {'speech_act', 'slot_updates', 'correction_target', 'ignore_input', 'confidence', 'evidence'}
+        required = {
+            'speech_act',
+            'detected_language',
+            'target_slot',
+            'ambiguity',
+            'requires_confirmation',
+            'confidence',
+            'evidence',
+            'grounded_segments',
+            'operations',
+        }
         return required.issubset(payload.keys())
+
+    def _needs_semantic_rescue(self, req: ExtractTurn.Goal, payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        operations = payload.get('operations', [])
+        has_substantive_op = False
+        if isinstance(operations, list):
+            for raw_operation in operations:
+                if not isinstance(raw_operation, dict):
+                    continue
+                op = str(raw_operation.get('op', '')).strip()
+                slot = self._sanitize_slot(raw_operation.get('slot', 'none'))
+                value = str(raw_operation.get('value') or '').strip()
+                if op in {'set_slot', 'replace_slot'} and slot in {'name', 'affiliation', 'purpose'} and value:
+                    has_substantive_op = True
+                    break
+                if op in {'confirm_working_state', 'reject_confirmation'}:
+                    has_substantive_op = True
+                    break
+        if has_substantive_op:
+            return False
+        speech_act = str(payload.get('speech_act', 'unknown')).strip()
+        target_slot = self._sanitize_slot(payload.get('target_slot', 'none'))
+        if req.phase == 'confirming':
+            return True
+        return speech_act in {'inform', 'correction'} and target_slot in {'name', 'affiliation', 'purpose'}
+
+    def _semantic_rescue_payload(self, req: ExtractTurn.Goal, payload: dict[str, Any]) -> dict[str, Any]:
+        if req.phase == 'confirming':
+            rescued = self._rescue_confirmation_payload(req, payload)
+            if rescued is not None:
+                return rescued
+        rescued = self._rescue_slot_operation_payload(req, payload)
+        return rescued or payload
+
+    def _rescue_confirmation_payload(
+        self,
+        req: ExtractTurn.Goal,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        snapshot = self._legacy_snapshot(req)
+        try:
+            raw = invoke_chat_action(
+                client=self._chat_client,
+                action_name=self._chat_action_name,
+                session_id=f'{req.turn.session_id}:extract-confirm-rescue:{req.turn.turn_seq}',
+                user_message=build_reception_confirmation_rescue_prompt(snapshot, req.turn.text),
+                system_prompt=RECEPTION_REPAIR_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=min(self._max_tokens, 96),
+                stateless=True,
+                response_json_schema=RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA,
+                total_timeout_sec=12.0,
+            )
+            rescue_payload = extract_json_object(raw)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'stage1 confirmation rescue failed: {exc}')
+            return None
+        if not isinstance(rescue_payload, dict):
+            return None
+        speech_act = str(rescue_payload.get('speech_act', payload.get('speech_act', 'unknown'))).strip()
+        correction = rescue_payload.get('correction', {})
+        target = self._sanitize_slot(correction.get('target', 'none')) if isinstance(correction, dict) else 'none'
+        if speech_act == 'affirm':
+            payload['speech_act'] = 'affirm'
+            payload['target_slot'] = 'none'
+            payload['ambiguity'] = 'low'
+            payload['requires_confirmation'] = False
+            payload['evidence'] = str(payload.get('evidence') or 'confirmation rescue')
+            payload['operations'] = [
+                {
+                    'op': 'confirm_working_state',
+                    'slot': 'none',
+                    'value': None,
+                    'grounded_text': req.turn.text,
+                    'confidence': float(payload.get('confidence', 0.0) or 0.0),
+                }
+            ]
+            return payload
+        if speech_act in {'deny', 'correction'}:
+            payload['speech_act'] = speech_act
+            payload['target_slot'] = target
+            payload['requires_confirmation'] = True
+            payload['operations'] = [
+                {
+                    'op': 'reject_confirmation',
+                    'slot': target if target in {'name', 'affiliation', 'purpose'} else self._preferred_slot(req, payload),
+                    'value': None,
+                    'grounded_text': req.turn.text,
+                    'confidence': float(payload.get('confidence', 0.0) or 0.0),
+                }
+            ]
+            return payload
+        return None
+
+    def _rescue_slot_operation_payload(
+        self,
+        req: ExtractTurn.Goal,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        target_slot = self._preferred_slot(req, payload)
+        if target_slot not in {'name', 'affiliation', 'purpose'}:
+            return None
+        snapshot = self._legacy_snapshot(req)
+        try:
+            raw = invoke_chat_action(
+                client=self._chat_client,
+                action_name=self._chat_action_name,
+                session_id=f'{req.turn.session_id}:extract-slot-rescue:{req.turn.turn_seq}',
+                user_message=build_reception_slot_extract_prompt(snapshot, req.turn.text, target_fields=[target_slot]),
+                system_prompt=RECEPTION_REPAIR_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=min(self._max_tokens, 96),
+                stateless=True,
+                response_json_schema=RECEPTION_SLOT_EXTRACT_JSON_SCHEMA,
+                total_timeout_sec=12.0,
+            )
+            rescue_payload = extract_json_object(raw)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'stage1 slot rescue failed: {exc}')
+            return None
+        if not isinstance(rescue_payload, dict):
+            return None
+        rescued_value = str(rescue_payload.get(target_slot) or '').strip()
+        if not rescued_value:
+            return None
+        current_value = getattr(req.working_info, target_slot)
+        operation_name = 'replace_slot' if current_value else 'set_slot'
+        payload['target_slot'] = target_slot
+        payload['ambiguity'] = 'low' if str(payload.get('ambiguity', 'medium')) == 'high' else payload.get('ambiguity', 'medium')
+        payload['requires_confirmation'] = False
+        payload['grounded_segments'] = [rescued_value]
+        payload['operations'] = [
+            {
+                'op': operation_name,
+                'slot': target_slot,
+                'value': rescued_value,
+                'grounded_text': rescued_value,
+                'confidence': float(payload.get('confidence', 0.0) or 0.0),
+            }
+        ]
+        return payload
+
+    def _legacy_snapshot(self, req: ExtractTurn.Goal) -> SessionSnapshot:
+        return SessionSnapshot(
+            session_id=req.turn.session_id,
+            phase=req.phase,
+            visitor_info=VisitorInfo(
+                name=req.working_info.name or None,
+                affiliation=req.working_info.affiliation or None,
+                purpose=req.working_info.purpose or None,
+            ),
+            last_user_utterance=req.turn.text,
+            last_dialog_act=req.last_system_act or None,
+            last_spoken_text='',
+            pending_confirmation=(
+                VisitorInfo(
+                    name=req.committed_info.name or None,
+                    affiliation=req.committed_info.affiliation or None,
+                    purpose=req.committed_info.purpose or None,
+                )
+                if req.phase == 'confirming'
+                else None
+            ),
+            latest_turn_id=int(req.turn.turn_seq),
+        )
+
+    def _preferred_slot(self, req: ExtractTurn.Goal, payload: dict[str, Any]) -> str:
+        pending = self._sanitize_slot(req.pending_clarification_slot)
+        if pending in {'name', 'affiliation', 'purpose'}:
+            return pending
+        target = self._sanitize_slot(payload.get('target_slot', 'none'))
+        if target in {'name', 'affiliation', 'purpose'}:
+            return target
+        focus = self._sanitize_slot(req.focus_slot)
+        if focus in {'name', 'affiliation', 'purpose'}:
+            return focus
+        if not req.working_info.name:
+            return 'name'
+        if not req.working_info.affiliation:
+            return 'affiliation'
+        if not req.working_info.purpose:
+            return 'purpose'
+        return 'none'
 
     @staticmethod
     def _to_decision(turn_seq: int, payload: dict[str, Any] | None) -> SemanticDecision:
         msg = SemanticDecision()
         msg.turn_seq = int(turn_seq)
         msg.speech_act = 'unknown'
-        msg.correction_target = 'none'
-        msg.ignore_input = False
+        msg.detected_language = 'unknown'
+        msg.target_slot = 'none'
+        msg.ambiguity = 'high'
+        msg.requires_confirmation = False
         msg.confidence = 0.0
         msg.evidence = ''
-        slot = VisitorInfo()
-        slot.name = ''
-        slot.affiliation = ''
-        slot.purpose = ''
+        msg.operations = []
+        msg.grounded_segments = []
 
         if isinstance(payload, dict):
             msg.speech_act = str(payload.get('speech_act', 'unknown'))
-            msg.correction_target = str(payload.get('correction_target', 'none'))
-            msg.ignore_input = bool(payload.get('ignore_input', False))
+            msg.detected_language = SemanticExtractorServer._sanitize_detected_language(
+                payload.get('detected_language', 'unknown')
+            )
+            msg.target_slot = SemanticExtractorServer._sanitize_slot(payload.get('target_slot', 'none'))
+            msg.ambiguity = SemanticExtractorServer._sanitize_ambiguity(payload.get('ambiguity', 'high'))
+            msg.requires_confirmation = bool(payload.get('requires_confirmation', False))
             try:
                 msg.confidence = float(payload.get('confidence', 0.0))
             except (TypeError, ValueError):
                 msg.confidence = 0.0
             msg.evidence = str(payload.get('evidence', ''))
-            updates = payload.get('slot_updates', {})
-            if isinstance(updates, dict):
-                slot.name = str(updates.get('name') or '').strip()
-                slot.affiliation = str(updates.get('affiliation') or '').strip()
-                slot.purpose = str(updates.get('purpose') or '').strip()
+            msg.grounded_segments = [str(item).strip() for item in payload.get('grounded_segments', []) if str(item).strip()]
+            raw_operations = payload.get('operations', [])
+            if isinstance(raw_operations, list):
+                for raw_operation in raw_operations:
+                    if not isinstance(raw_operation, dict):
+                        continue
+                    op = BeliefOperation()
+                    op.op = str(raw_operation.get('op', 'ignore')).strip()
+                    op.slot = SemanticExtractorServer._sanitize_slot(raw_operation.get('slot', 'none'))
+                    op.value = str(raw_operation.get('value') or '').strip()
+                    op.grounded_text = str(raw_operation.get('grounded_text') or '').strip()
+                    try:
+                        op.confidence = float(raw_operation.get('confidence', 0.0))
+                    except (TypeError, ValueError):
+                        op.confidence = 0.0
+                    msg.operations.append(op)
 
-        msg.slot_patch = slot
         return msg
 
     @staticmethod
+    def _sanitize_detected_language(value: object) -> str:
+        candidate = str(value or 'unknown').strip().lower()
+        if candidate in {'ja', 'en'}:
+            return candidate
+        return 'unknown'
+
+    @staticmethod
+    def _sanitize_slot(value: object) -> str:
+        candidate = str(value or 'none').strip().lower()
+        if candidate in {'name', 'affiliation', 'purpose'}:
+            return candidate
+        return 'none'
+
+    @staticmethod
+    def _sanitize_ambiguity(value: object) -> str:
+        candidate = str(value or 'high').strip().lower()
+        if candidate in {'low', 'medium', 'high'}:
+            return candidate
+        return 'high'
+
+    @staticmethod
     def _heuristic_payload(text: str) -> dict[str, Any]:
-        utterance = (text or '').strip()
-        normalized = utterance.replace('　', ' ')
-        lower = normalized.lower()
-        segments = [s.strip() for s in re.split(r'[、。,.!?！？\n]+', normalized) if s.strip()]
-
-        speech_act = 'inform'
+        utterance = str(text or '').strip()
         if not utterance:
-            speech_act = 'unknown'
-        elif any(token in lower for token in ('訂正', '違います', 'ではなく', 'じゃなく', '修正')):
-            speech_act = 'correction'
-        elif any(token in lower for token in ('こんにちは', 'こんばんは', 'おはよう', 'はじめまして')):
-            speech_act = 'greeting'
-        elif '?' in utterance or '？' in utterance:
-            speech_act = 'question'
-
-        updates: dict[str, str | None] = {'name': None, 'affiliation': None, 'purpose': None}
-        affiliation_markers = (
-            '株式会社',
-            '有限会社',
-            '合同会社',
-            '大学',
-            '研究所',
-            '病院',
-            '銀行',
-            '商事',
-            'コーポレーション',
-        )
-        purpose_markers = (
-            '打ち合わせ',
-            '面談',
-            '訪問',
-            '会議',
-            '相談',
-            '商談',
-            '納品',
-            '手続き',
-            '説明',
-            '挨拶',
-        )
-
-        name_patterns = (
-            r'(?:私(?:の)?名前は|名前は|わたしは|私は)\s*([^\s、。,.]{1,20})\s*(?:です|と申します|といいます)?',
-            r'(?:申します|といいます)\s*([^\s、。,.]{1,20})',
-        )
-        for pattern in name_patterns:
-            match = re.search(pattern, normalized)
-            if match:
-                candidate = match.group(1).strip()
-                if candidate and not any(m in candidate for m in affiliation_markers + purpose_markers):
-                    updates['name'] = candidate
-                    break
-
-        aff_patterns = (
-            r'(?:所属(?:は)?|会社(?:名)?(?:は)?|勤務先(?:は)?|学校(?:名)?(?:は)?)\s*([^\n、。]{1,40})',
-        )
-        for pattern in aff_patterns:
-            match = re.search(pattern, normalized)
-            if match:
-                updates['affiliation'] = match.group(1).strip()
-                break
-        if not updates['affiliation']:
-            for seg in segments:
-                if any(marker in seg for marker in affiliation_markers):
-                    updates['affiliation'] = seg
-                    break
-
-        purpose_patterns = (
-            r'(?:用件(?:は)?|目的(?:は)?|本日(?:の)?(?:用件|目的)(?:は)?)\s*([^\n、。]{1,40})',
-        )
-        for pattern in purpose_patterns:
-            match = re.search(pattern, normalized)
-            if match:
-                updates['purpose'] = match.group(1).strip()
-                break
-        if not updates['purpose']:
-            for seg in segments:
-                if any(marker in seg for marker in purpose_markers):
-                    updates['purpose'] = seg
-                    break
-
-        correction_target = 'none'
-        if speech_act == 'correction':
-            has_name = any(token in lower for token in ('名前', '氏名'))
-            has_aff = any(token in lower for token in ('所属', '会社', '勤務先', '学校'))
-            has_purpose = any(token in lower for token in ('用件', '目的', '要件'))
-            count = int(has_name) + int(has_aff) + int(has_purpose)
-            if count >= 2:
-                correction_target = 'all'
-            elif has_name:
-                correction_target = 'name'
-            elif has_aff:
-                correction_target = 'affiliation'
-            elif has_purpose:
-                correction_target = 'purpose'
-            else:
-                correction_target = 'all'
-
-        extracted_count = sum(1 for value in updates.values() if value)
-        if extracted_count > 0:
-            confidence = 0.86
-        elif speech_act == 'greeting':
-            confidence = 0.80
-        elif speech_act == 'correction':
-            confidence = 0.72
-        elif speech_act == 'question':
-            confidence = 0.55
-        else:
-            confidence = 0.40
-
+            return {
+                'speech_act': 'unknown',
+                'detected_language': 'unknown',
+                'target_slot': 'none',
+                'ambiguity': 'high',
+                'requires_confirmation': False,
+                'confidence': 0.0,
+                'evidence': 'semantic_extractor_heuristic_empty',
+                'grounded_segments': [],
+                'operations': [
+                    {
+                        'op': 'ignore',
+                        'slot': 'none',
+                        'value': None,
+                        'grounded_text': None,
+                        'confidence': 0.0,
+                    }
+                ],
+            }
         return {
-            'speech_act': speech_act,
-            'slot_updates': {
-                'name': updates['name'],
-                'affiliation': updates['affiliation'],
-                'purpose': updates['purpose'],
-            },
-            'correction_target': correction_target,
-            'ignore_input': False,
-            'confidence': confidence,
-            'evidence': 'heuristic_fallback',
+            'speech_act': 'unknown',
+            'detected_language': 'unknown',
+            'target_slot': 'none',
+            'ambiguity': 'high',
+            'requires_confirmation': True,
+            'confidence': 0.0,
+            'evidence': 'semantic_extractor_heuristic_request_clarification',
+            'grounded_segments': [],
+            'operations': [
+                {
+                    'op': 'request_clarification',
+                    'slot': 'none',
+                    'value': None,
+                    'grounded_text': None,
+                    'confidence': 0.0,
+                }
+            ],
         }
 
 

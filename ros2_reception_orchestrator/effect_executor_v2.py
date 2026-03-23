@@ -44,6 +44,23 @@ class EffectExecutor:
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
+    def is_tts_active(self) -> bool:
+        with self._lock:
+            return self._tts_busy
+
+    def cancel_pending_tts(self, *, detail: str = 'barge_in') -> list[OrchestratorCommandData]:
+        with self._lock:
+            canceled = [pending.command for pending in self._tts_queue]
+            self._tts_queue = []
+        for command in canceled:
+            self._publish_event(
+                command,
+                ExecutionEvent.STATUS_CANCELED,
+                ExecutionEvent.REASON_REPLACED,
+                detail,
+            )
+        return canceled
+
     def submit(
         self,
         command: OrchestratorCommandData,
