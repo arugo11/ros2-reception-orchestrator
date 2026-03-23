@@ -126,6 +126,15 @@ _STAGE1_JSON_SCHEMA = json.dumps(
     ensure_ascii=False,
 )
 
+_SUPPORTED_EXTRACT_PROVIDERS = {'chat_llm', 'structured_extractor'}
+
+_STRUCTURED_PROVIDER_SYSTEM_PROMPT = (
+    _STAGE1_SYSTEM_PROMPT
+    + ' Treat the result as a structured extraction function call. '
+    + 'Prefer a single grounded operation over broad interpretation. '
+    + 'Use grounded_segments to justify every slot operation.'
+)
+
 
 class SemanticExtractorServer(Node):
     def __init__(self) -> None:
@@ -137,11 +146,21 @@ class SemanticExtractorServer(Node):
         self.declare_parameter('llm.temperature', 0.0)
         self.declare_parameter('llm.max_tokens', 220)
         self.declare_parameter('extract.action_name', '/reception/extract_turn')
+        self.declare_parameter('extract.provider', 'chat_llm')
+        self.declare_parameter('extract.shadow_enabled', False)
+        self.declare_parameter('extract.shadow_provider', '')
 
         self._chat_action_name = str(self.get_parameter('llm.chat_action_name').value)
         self._temperature = float(self.get_parameter('llm.temperature').value)
         self._max_tokens = int(self.get_parameter('llm.max_tokens').value)
         self._extract_action_name = str(self.get_parameter('extract.action_name').value)
+        self._extract_provider = self._sanitize_provider(
+            self.get_parameter('extract.provider').value
+        )
+        self._shadow_enabled = bool(self.get_parameter('extract.shadow_enabled').value)
+        self._shadow_provider = self._sanitize_provider(
+            self.get_parameter('extract.shadow_provider').value
+        )
 
         self._chat_client = ActionClient(
             self,
@@ -161,66 +180,7 @@ class SemanticExtractorServer(Node):
         req = goal_handle.request
         result = ExtractTurn.Result()
 
-        prompt = self._build_prompt(req)
-        raw = ''
-        repaired = False
-        payload: dict[str, Any] | None = None
-        try:
-            started = time.monotonic()
-            raw = invoke_chat_action(
-                client=self._chat_client,
-                action_name=self._chat_action_name,
-                session_id=f'{req.turn.session_id}:extract:{req.turn.turn_seq}',
-                user_message=prompt,
-                system_prompt=_STAGE1_SYSTEM_PROMPT,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                stateless=True,
-                response_json_schema=_STAGE1_JSON_SCHEMA,
-                total_timeout_sec=20.0,
-            )
-            self.get_logger().info(
-                f'stage1 primary completed turn={req.turn.turn_seq} '
-                f'latency_ms={(time.monotonic() - started) * 1000.0:.1f} raw_len={len(raw)}'
-            )
-            payload = extract_json_object(raw)
-            self.get_logger().info(
-                f'stage1 primary parsed turn={req.turn.turn_seq} payload_ok={self._usable_payload(payload)}'
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warn(f'stage1 primary failed: {exc}')
-
-        if not self._usable_payload(payload):
-            repaired = True
-            repair_prompt = (
-                'Fix the following output into valid JSON matching the schema.\n'
-                f'raw={raw}\n'
-                f'utterance={req.turn.text}\n'
-            )
-            try:
-                started = time.monotonic()
-                raw = invoke_chat_action(
-                    client=self._chat_client,
-                    action_name=self._chat_action_name,
-                    session_id=f'{req.turn.session_id}:extract-repair:{req.turn.turn_seq}',
-                    user_message=repair_prompt,
-                    system_prompt='Return fixed JSON only.',
-                    temperature=0.0,
-                    max_tokens=min(self._max_tokens, 180),
-                    stateless=True,
-                    response_json_schema=_STAGE1_JSON_SCHEMA,
-                    total_timeout_sec=12.0,
-                )
-                self.get_logger().info(
-                    f'stage1 repair completed turn={req.turn.turn_seq} '
-                    f'latency_ms={(time.monotonic() - started) * 1000.0:.1f} raw_len={len(raw)}'
-                )
-                payload = extract_json_object(raw)
-                self.get_logger().info(
-                    f'stage1 repair parsed turn={req.turn.turn_seq} payload_ok={self._usable_payload(payload)}'
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warn(f'stage1 repair failed: {exc}')
+        payload, raw, repaired = self._run_provider(req, self._extract_provider)
 
         if not self._usable_payload(payload):
             payload = self._heuristic_payload(req.turn.text)
@@ -231,6 +191,9 @@ class SemanticExtractorServer(Node):
             rescued_payload = self._semantic_rescue_payload(req, payload)
             if self._usable_payload(rescued_payload):
                 payload = rescued_payload
+        payload = self._apply_contextual_overrides(req, payload)
+
+        self._maybe_run_shadow_provider(req, payload)
 
         decision = self._to_decision(req.turn.turn_seq, payload)
         result.decision = decision
@@ -271,6 +234,130 @@ class SemanticExtractorServer(Node):
             '  output: {"speech_act":"inform","detected_language":"en","target_slot":"purpose","ambiguity":"low","requires_confirmation":false,"confidence":0.85,"evidence":"states visit purpose","grounded_segments":["I have a meeting"],"operations":[{"op":"set_slot","slot":"purpose","value":"meeting","grounded_text":"I have a meeting","confidence":0.85}]}\n'
         )
 
+    def _build_structured_prompt(self, req: ExtractTurn.Goal) -> str:
+        return (
+            self._build_prompt(req)
+            + '\nFunction schema:\n'
+            + '{"speech_act":"...","detected_language":"ja|en|unknown","target_slot":"name|affiliation|purpose|none","ambiguity":"low|medium|high","requires_confirmation":true|false,"confidence":0.0,"evidence":"...","grounded_segments":["..."],"operations":[{"op":"set_slot|replace_slot|clear_slot|confirm_working_state|reject_confirmation|request_clarification|ignore","slot":"name|affiliation|purpose|none","value":"...","grounded_text":"...","confidence":0.0}]}\n'
+            + 'Return exactly one JSON object matching the function schema.'
+        )
+
+    def _run_provider(
+        self,
+        req: ExtractTurn.Goal,
+        provider_name: str,
+    ) -> tuple[dict[str, Any] | None, str, bool]:
+        provider = self._sanitize_provider(provider_name)
+        if provider == 'structured_extractor':
+            return self._extract_with_chat_provider(
+                req,
+                provider='structured_extractor',
+                prompt=self._build_structured_prompt(req),
+                system_prompt=_STRUCTURED_PROVIDER_SYSTEM_PROMPT,
+            )
+        return self._extract_with_chat_provider(
+            req,
+            provider='chat_llm',
+            prompt=self._build_prompt(req),
+            system_prompt=_STAGE1_SYSTEM_PROMPT,
+        )
+
+    def _extract_with_chat_provider(
+        self,
+        req: ExtractTurn.Goal,
+        *,
+        provider: str,
+        prompt: str,
+        system_prompt: str,
+    ) -> tuple[dict[str, Any] | None, str, bool]:
+        raw = ''
+        repaired = False
+        payload: dict[str, Any] | None = None
+        try:
+            started = time.monotonic()
+            raw = invoke_chat_action(
+                client=self._chat_client,
+                action_name=self._chat_action_name,
+                session_id=f'{req.turn.session_id}:extract:{provider}:{req.turn.turn_seq}',
+                user_message=prompt,
+                system_prompt=system_prompt,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                stateless=True,
+                response_json_schema=_STAGE1_JSON_SCHEMA,
+                total_timeout_sec=20.0,
+            )
+            self.get_logger().info(
+                f'stage1 provider={provider} completed turn={req.turn.turn_seq} '
+                f'latency_ms={(time.monotonic() - started) * 1000.0:.1f} raw_len={len(raw)}'
+            )
+            payload = extract_json_object(raw)
+            self.get_logger().info(
+                f'stage1 provider={provider} parsed turn={req.turn.turn_seq} '
+                f'payload_ok={self._usable_payload(payload)}'
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'stage1 provider={provider} failed: {exc}')
+
+        if self._usable_payload(payload):
+            return payload, raw, repaired
+
+        repaired = True
+        repair_prompt = (
+            'Fix the following output into valid JSON matching the schema.\n'
+            f'raw={raw}\n'
+            f'utterance={req.turn.text}\n'
+        )
+        try:
+            started = time.monotonic()
+            raw = invoke_chat_action(
+                client=self._chat_client,
+                action_name=self._chat_action_name,
+                session_id=f'{req.turn.session_id}:extract-repair:{provider}:{req.turn.turn_seq}',
+                user_message=repair_prompt,
+                system_prompt='Return fixed JSON only.',
+                temperature=0.0,
+                max_tokens=min(self._max_tokens, 180),
+                stateless=True,
+                response_json_schema=_STAGE1_JSON_SCHEMA,
+                total_timeout_sec=12.0,
+            )
+            self.get_logger().info(
+                f'stage1 repair provider={provider} completed turn={req.turn.turn_seq} '
+                f'latency_ms={(time.monotonic() - started) * 1000.0:.1f} raw_len={len(raw)}'
+            )
+            payload = extract_json_object(raw)
+            self.get_logger().info(
+                f'stage1 repair provider={provider} parsed turn={req.turn.turn_seq} '
+                f'payload_ok={self._usable_payload(payload)}'
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'stage1 repair provider={provider} failed: {exc}')
+        return payload, raw, repaired
+
+    def _maybe_run_shadow_provider(
+        self,
+        req: ExtractTurn.Goal,
+        primary_payload: dict[str, Any] | None,
+    ) -> None:
+        if not self._shadow_enabled:
+            return
+        shadow_provider = self._sanitize_provider(self._shadow_provider)
+        if shadow_provider == self._extract_provider:
+            return
+        try:
+            shadow_payload, _, _ = self._run_provider(req, shadow_provider)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f'shadow extractor provider={shadow_provider} failed turn={req.turn.turn_seq}: {exc}'
+            )
+            return
+        diff = self._provider_diff_summary(primary_payload, shadow_payload)
+        self.get_logger().info(
+            f'shadow extractor turn={req.turn.turn_seq} primary={self._extract_provider} '
+            f'shadow={shadow_provider} diff={json.dumps(diff, ensure_ascii=False)}'
+        )
+
     @staticmethod
     def _usable_payload(payload: dict[str, Any] | None) -> bool:
         if not isinstance(payload, dict):
@@ -287,6 +374,30 @@ class SemanticExtractorServer(Node):
             'operations',
         }
         return required.issubset(payload.keys())
+
+    @staticmethod
+    def _sanitize_provider(value: object) -> str:
+        candidate = str(value or '').strip().lower()
+        if candidate in _SUPPORTED_EXTRACT_PROVIDERS:
+            return candidate
+        return 'chat_llm'
+
+    @staticmethod
+    def _provider_diff_summary(
+        primary_payload: dict[str, Any] | None,
+        shadow_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        primary = primary_payload or {}
+        shadow = shadow_payload or {}
+        primary_ops = primary.get('operations', []) if isinstance(primary, dict) else []
+        shadow_ops = shadow.get('operations', []) if isinstance(shadow, dict) else []
+        return {
+            'speech_act_changed': primary.get('speech_act') != shadow.get('speech_act'),
+            'target_slot_changed': primary.get('target_slot') != shadow.get('target_slot'),
+            'operation_count_changed': len(primary_ops) != len(shadow_ops),
+            'primary_ops': primary_ops,
+            'shadow_ops': shadow_ops,
+        }
 
     def _needs_semantic_rescue(self, req: ExtractTurn.Goal, payload: dict[str, Any] | None) -> bool:
         if not isinstance(payload, dict):
@@ -472,6 +583,93 @@ class SemanticExtractorServer(Node):
             return 'purpose'
         return 'none'
 
+    def _apply_contextual_overrides(
+        self,
+        req: ExtractTurn.Goal,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return payload
+
+        utterance = str(req.turn.text or '').strip()
+        expected_slot = self._preferred_slot(req, payload)
+
+        if _should_override_to_purpose(req=req, expected_slot=expected_slot, utterance=utterance):
+            payload = dict(payload)
+            payload['speech_act'] = 'correction' if req.phase == 'confirming' else 'inform'
+            payload['target_slot'] = 'purpose'
+            payload['ambiguity'] = 'low'
+            payload['requires_confirmation'] = req.phase == 'confirming'
+            purpose_value = _extract_purpose_value(utterance)
+            operation_name = 'replace_slot' if str(req.working_info.purpose or '').strip() else 'set_slot'
+            payload['grounded_segments'] = [purpose_value]
+            payload['evidence'] = (
+                str(payload.get('evidence') or '').strip()
+                + ' | contextual_override:purpose_intent'
+            ).strip(' |')
+            payload['operations'] = [
+                {
+                    'op': operation_name,
+                    'slot': 'purpose',
+                    'value': purpose_value,
+                    'grounded_text': utterance,
+                    'confidence': float(payload.get('confidence', 0.0) or 0.0),
+                }
+            ]
+            return payload
+
+        if expected_slot == 'affiliation':
+            if _looks_like_incomplete_affiliation_fragment(utterance):
+                payload = dict(payload)
+                payload['speech_act'] = 'unknown'
+                payload['target_slot'] = 'affiliation'
+                payload['ambiguity'] = 'high'
+                payload['requires_confirmation'] = True
+                payload['grounded_segments'] = []
+                payload['evidence'] = (
+                    str(payload.get('evidence') or '').strip()
+                    + ' | contextual_override:incomplete_affiliation_fragment'
+                ).strip(' |')
+                payload['operations'] = [
+                    {
+                        'op': 'request_clarification',
+                        'slot': 'affiliation',
+                        'value': None,
+                        'grounded_text': utterance,
+                        'confidence': float(payload.get('confidence', 0.0) or 0.0),
+                    }
+                ]
+                return payload
+
+            if (
+                _looks_like_affiliation_utterance(utterance)
+                and self._sanitize_slot(payload.get('target_slot', 'none')) != 'affiliation'
+            ):
+                affiliation_value = _extract_affiliation_value(utterance)
+                if affiliation_value:
+                    payload = dict(payload)
+                    payload['speech_act'] = 'inform'
+                    payload['target_slot'] = 'affiliation'
+                    payload['ambiguity'] = 'low'
+                    payload['requires_confirmation'] = False
+                    payload['grounded_segments'] = [affiliation_value]
+                    payload['evidence'] = (
+                        str(payload.get('evidence') or '').strip()
+                        + ' | contextual_override:affiliation_context'
+                    ).strip(' |')
+                    payload['operations'] = [
+                        {
+                            'op': 'replace_slot' if str(req.working_info.affiliation or '').strip() else 'set_slot',
+                            'slot': 'affiliation',
+                            'value': affiliation_value,
+                            'grounded_text': utterance,
+                            'confidence': float(payload.get('confidence', 0.0) or 0.0),
+                        }
+                    ]
+                    return payload
+
+        return payload
+
     @staticmethod
     def _to_decision(turn_seq: int, payload: dict[str, Any] | None) -> SemanticDecision:
         msg = SemanticDecision()
@@ -581,6 +779,112 @@ class SemanticExtractorServer(Node):
                 }
             ],
         }
+
+
+_VISIT_PURPOSE_MARKERS = (
+    '会いに来',
+    '会いにき',
+    'お会いし',
+    '面会',
+    '打ち合わせ',
+    'ミーティング',
+    '相談',
+    'お願い',
+    '訪問',
+    '伺い',
+    '来ました',
+    '来た',
+    '要件',
+    '用件',
+)
+
+_IDENTITY_MARKERS = (
+    '名前は',
+    '申します',
+    'といいます',
+    '所属は',
+)
+
+_AFFILIATION_MARKERS = (
+    '研究室',
+    '大学',
+    '会社',
+    '学部',
+    '学科',
+    '学院',
+    'センター',
+    '株式会社',
+    '有限会社',
+    '高校',
+    '病院',
+)
+
+
+def _looks_like_visit_purpose_utterance(text: str) -> bool:
+    utterance = str(text or '').strip()
+    return bool(utterance) and any(marker in utterance for marker in _VISIT_PURPOSE_MARKERS)
+
+
+def _looks_like_explicit_identity_utterance(text: str) -> bool:
+    utterance = str(text or '').strip()
+    return bool(utterance) and any(marker in utterance for marker in _IDENTITY_MARKERS)
+
+
+def _extract_purpose_value(text: str) -> str:
+    candidate = str(text or '').strip()
+    for prefix in ('本日の要件は', '本日の用件は', '要件は', '用件は'):
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix):].strip()
+            break
+    while candidate and candidate[-1] in '。.!?！？':
+        candidate = candidate[:-1].rstrip()
+    return candidate or str(text or '').strip()
+
+
+def _looks_like_incomplete_affiliation_fragment(text: str) -> bool:
+    utterance = str(text or '').strip()
+    if not utterance:
+        return False
+    trimmed = utterance.rstrip('。.!?！？')
+    if any(marker in trimmed for marker in _AFFILIATION_MARKERS):
+        return False
+    return len(trimmed) <= 4 and trimmed.endswith(('は', 'が', 'を', 'の'))
+
+
+def _looks_like_affiliation_utterance(text: str) -> bool:
+    utterance = str(text or '').strip()
+    return bool(utterance) and any(marker in utterance for marker in _AFFILIATION_MARKERS)
+
+
+def _extract_affiliation_value(text: str) -> str:
+    candidate = str(text or '').strip()
+    for prefix in ('所属は', '所属です', '所属', 'ご所属は'):
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix):].strip()
+            break
+    for suffix in ('です', 'になります'):
+        if candidate.endswith(suffix):
+            candidate = candidate[: -len(suffix)].rstrip()
+    while candidate and candidate[-1] in '。.!?！？':
+        candidate = candidate[:-1].rstrip()
+    return candidate
+
+
+def _should_override_to_purpose(
+    *,
+    req: ExtractTurn.Goal,
+    expected_slot: str,
+    utterance: str,
+) -> bool:
+    if not utterance:
+        return False
+    if _looks_like_explicit_identity_utterance(utterance):
+        return False
+    if not _looks_like_visit_purpose_utterance(utterance):
+        return False
+    if req.phase == 'confirming':
+        return True
+    return expected_slot == 'purpose'
 
 
 def main() -> None:

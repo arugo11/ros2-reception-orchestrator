@@ -15,6 +15,7 @@ from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -159,6 +160,9 @@ def generate_launch_description() -> LaunchDescription:
 
     model_catalog_file = LaunchConfiguration('model_catalog_file')
     profile_name = LaunchConfiguration('profile_name')
+    asr_profile = LaunchConfiguration('asr_profile')
+    llm_profile = LaunchConfiguration('llm_profile')
+    tts_profile = LaunchConfiguration('tts_profile')
     llm_provider = LaunchConfiguration('llm_provider')
     llm_api_base_url = LaunchConfiguration('llm_api_base_url')
     enable_mic_input = LaunchConfiguration('enable_mic_input')
@@ -177,6 +181,19 @@ def generate_launch_description() -> LaunchDescription:
     playback_enabled = LaunchConfiguration('playback_enabled')
     playback_device = LaunchConfiguration('playback_device')
     playback_sample_rate_hz = LaunchConfiguration('playback_sample_rate_hz')
+    enable_demo_gui = LaunchConfiguration('enable_demo_gui')
+    demo_gui_host = LaunchConfiguration('demo_gui_host')
+    demo_gui_port = LaunchConfiguration('demo_gui_port')
+
+    resolved_asr_profile = PythonExpression([
+        "'", asr_profile, "' if '", asr_profile, "' else ('", profile_name, "' if '", profile_name, "' else 'qwen3_asr_0_6b_cpu')"
+    ])
+    resolved_llm_profile = PythonExpression([
+        "'", llm_profile, "' if '", llm_profile, "' else ('", profile_name, "' if '", profile_name, "' else 'qwen35_4b_text')"
+    ])
+    resolved_tts_profile = PythonExpression([
+        "'", tts_profile, "' if '", tts_profile, "' else ('", profile_name, "' if '", profile_name, "' else 'qwen3_tts_gpu')"
+    ])
 
     mic_input = GroupAction(
         condition=IfCondition(enable_mic_input),
@@ -207,7 +224,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             'config_file': asr_config_file,
             'model_catalog_file': model_catalog_file,
-            'profile_name': profile_name,
+            'profile_name': resolved_asr_profile,
             'continuous_enabled': 'true',
         }.items(),
     )
@@ -223,7 +240,7 @@ def generate_launch_description() -> LaunchDescription:
             'llm_provider': llm_provider,
             'api_base_url': llm_api_base_url,
             'model_catalog_file': model_catalog_file,
-            'profile_name': profile_name,
+            'profile_name': resolved_llm_profile,
             'endpoint_prefix': 'llm',
             'vllm_port': '8000',
             'wandb_enabled': 'false',
@@ -243,7 +260,7 @@ def generate_launch_description() -> LaunchDescription:
             tts_config_file,
             {
                 'model_catalog_file': model_catalog_file,
-                'profile_name': profile_name,
+                'profile_name': resolved_tts_profile,
                 'playback.enabled': ParameterValue(playback_enabled, value_type=bool),
                 'playback.device': playback_device,
                 'playback.sample_rate_hz': ParameterValue(
@@ -295,6 +312,35 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[reception_params_file],
     )
 
+    demo_dashboard = Node(
+        condition=IfCondition(enable_demo_gui),
+        package='ros2_reception_orchestrator',
+        executable='reception_demo_dashboard',
+        name='reception_demo_dashboard',
+        output='screen',
+        parameters=[
+            {
+                'host': demo_gui_host,
+                'port': ParameterValue(demo_gui_port, value_type=int),
+                'profile_name': profile_name,
+                'asr_profile': resolved_asr_profile,
+                'llm_profile': resolved_llm_profile,
+                'tts_profile': resolved_tts_profile,
+                'llm_provider': llm_provider,
+                'audio_backend': audio_backend,
+                'alsa_device': alsa_device,
+                'playback_enabled': ParameterValue(playback_enabled, value_type=bool),
+                'playback_device': playback_device,
+                'tts.action_name': '/tts/speak',
+                'session.state_topic': '/reception/session_state',
+                'execution.event_topic': '/reception/events',
+                'conversation.trace_topic': '/reception/conversation_trace',
+                'llm.status_topic': '/llm/status',
+                'chat.status_topic': '/chat_bridge/status',
+            },
+        ],
+    )
+
     return LaunchDescription(
         [
             OpaqueFunction(function=_terminate_existing_stack_processes),
@@ -309,8 +355,23 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 'profile_name',
-                default_value='qwen_fullstack',
-                description='Shared model profile name used by LLM, ASR, and TTS.',
+                default_value='',
+                description='Compatibility profile applied to all components when asr_profile/llm_profile/tts_profile are not set.',
+            ),
+            DeclareLaunchArgument(
+                'asr_profile',
+                default_value='',
+                description='ASR model profile name. If empty, falls back to profile_name and then the package default.',
+            ),
+            DeclareLaunchArgument(
+                'llm_profile',
+                default_value='',
+                description='LLM model profile name. If empty, falls back to profile_name and then the package default.',
+            ),
+            DeclareLaunchArgument(
+                'tts_profile',
+                default_value='',
+                description='TTS model profile name. If empty, falls back to profile_name and then the package default.',
             ),
             DeclareLaunchArgument(
                 'llm_provider',
@@ -402,6 +463,21 @@ def generate_launch_description() -> LaunchDescription:
                 default_value='24000',
                 description='Playback sample rate for the TTS server.',
             ),
+            DeclareLaunchArgument(
+                'enable_demo_gui',
+                default_value='false',
+                description='Launch the localhost reception demo dashboard.',
+            ),
+            DeclareLaunchArgument(
+                'demo_gui_host',
+                default_value='127.0.0.1',
+                description='Host interface for the localhost reception demo dashboard.',
+            ),
+            DeclareLaunchArgument(
+                'demo_gui_port',
+                default_value='8090',
+                description='Port for the localhost reception demo dashboard.',
+            ),
             mic_input,
             asr_stack,
             llm_stack,
@@ -410,5 +486,6 @@ def generate_launch_description() -> LaunchDescription:
             semantic_extractor,
             response_planner,
             reception_orchestrator,
+            demo_dashboard,
         ]
     )

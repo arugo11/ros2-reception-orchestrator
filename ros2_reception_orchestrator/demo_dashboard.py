@@ -489,6 +489,9 @@ HTML_PAGE = """<!doctype html>
       const topics = config.topics || {};
       const entries = [
         ["profile_name", config.profile_name],
+        ["asr_profile", config.asr_profile],
+        ["llm_profile", config.llm_profile],
+        ["tts_profile", config.tts_profile],
         ["llm_provider", config.llm_provider],
         ["audio_backend", config.audio_backend],
         ["alsa_device", config.alsa_device],
@@ -941,6 +944,9 @@ class ReceptionDemoDashboardNode(Node):
 
         config = {
             'profile_name': self._profile_name,
+            'asr_profile': self._asr_profile,
+            'llm_profile': self._llm_profile,
+            'tts_profile': self._tts_profile,
             'llm_provider': self._llm_provider,
             'audio_backend': self._audio_backend,
             'alsa_device': self._alsa_device,
@@ -1008,7 +1014,10 @@ class ReceptionDemoDashboardNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter('host', '127.0.0.1')
         self.declare_parameter('port', 8090)
-        self.declare_parameter('profile_name', 'qwen_fullstack')
+        self.declare_parameter('profile_name', '')
+        self.declare_parameter('asr_profile', 'qwen3_asr_0_6b_cpu')
+        self.declare_parameter('llm_profile', 'qwen35_4b_text')
+        self.declare_parameter('tts_profile', 'qwen3_tts_gpu')
         self.declare_parameter('llm_provider', 'vllm')
         self.declare_parameter('audio_backend', 'alsa_arecord')
         self.declare_parameter('alsa_device', 'default')
@@ -1025,6 +1034,9 @@ class ReceptionDemoDashboardNode(Node):
         self._host = str(self.get_parameter('host').value)
         self._port = int(self.get_parameter('port').value)
         self._profile_name = str(self.get_parameter('profile_name').value)
+        self._asr_profile = str(self.get_parameter('asr_profile').value)
+        self._llm_profile = str(self.get_parameter('llm_profile').value)
+        self._tts_profile = str(self.get_parameter('tts_profile').value)
         self._llm_provider = str(self.get_parameter('llm_provider').value)
         self._audio_backend = str(self.get_parameter('audio_backend').value)
         self._alsa_device = str(self.get_parameter('alsa_device').value)

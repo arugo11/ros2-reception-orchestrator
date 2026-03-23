@@ -1,0 +1,16 @@
+profile_name: qwen3_asr_0_6b_cpu
+task: asr
+runner: custom_python
+repo_id: Qwen/Qwen3-ASR-0.6B
+backend: qwen_asr
+device: cpu
+dtype: int8
+context_len: 0
+memory_budget_mb: 0
+trust_remote_code: true
+startup_args: []
+require_gpu: false
+expected_languages:
+  - ja
+latency_target_ms: 1800
+quality_notes: CPU fallback profile for Qwen3-ASR-0.6B comparisons.

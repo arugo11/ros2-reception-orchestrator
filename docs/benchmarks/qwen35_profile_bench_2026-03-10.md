@@ -1,5 +1,8 @@
 # Qwen3.5 Profile Bench 2026-03-10
 
+> Historical note:
+> This benchmark captures a point-in-time comparison from 2026-03-10 and does not represent the current workspace default profile.
+
 Profiles tested against the scripted reception scenarios:
 
 - `qwen35_2b_gguf_q5km`

@@ -10,6 +10,7 @@ setup(
     name=package_name,
     version='0.1.0',
     packages=find_packages(exclude=['test']),
+    package_data={package_name: ['*.py']},
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -40,6 +41,7 @@ setup(
             'reception_orchestrator = ros2_reception_orchestrator.node_v2:main',
             'semantic_extractor_server = ros2_reception_orchestrator.semantic_extractor_server:main',
             'response_planner_server = ros2_reception_orchestrator.response_planner_server:main',
+            'reception_demo_dashboard = ros2_reception_orchestrator.demo_dashboard:main',
         ],
     },
 )

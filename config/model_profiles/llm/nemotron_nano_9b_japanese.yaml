@@ -1,0 +1,18 @@
+profile_name: nemotron_nano_9b_japanese
+task: llm
+runner: vllm
+repo_id: nvidia/NVIDIA-Nemotron-Nano-9B-v2-Japanese
+device: cuda:0
+dtype: bfloat16
+context_len: 1024
+gpu_memory_utilization: 0.55
+trust_remote_code: true
+startup_args:
+  - --enforce-eager
+  - --max-num-seqs
+  - "1"
+expected_languages:
+  - ja
+  - en
+latency_target_ms: 1800
+quality_notes: Japanese-focused comparison profile for correction-heavy reception flows.
