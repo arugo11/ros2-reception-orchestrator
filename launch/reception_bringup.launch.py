@@ -6,6 +6,7 @@ import time
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import ExecuteProcess
 from launch.actions import GroupAction
 from launch.actions import IncludeLaunchDescription
 from launch.actions import OpaqueFunction
@@ -97,6 +98,9 @@ def _terminate_existing_stack_processes(context, *args, **kwargs):  # noqa: ANN0
         'tts_server',
         'chat_bridge_node',
         'mic_input_node',
+        'visitor_detection_node',
+        'ros2_reception_orchestrator.visitor_detection',
+        'camera_image_publisher',
         'vllm serve',
     )
     candidate_pids: list[int] = []
@@ -184,6 +188,14 @@ def generate_launch_description() -> LaunchDescription:
     enable_demo_gui = LaunchConfiguration('enable_demo_gui')
     demo_gui_host = LaunchConfiguration('demo_gui_host')
     demo_gui_port = LaunchConfiguration('demo_gui_port')
+    enable_visitor_detection = LaunchConfiguration('enable_visitor_detection')
+    enable_camera_publisher = LaunchConfiguration('enable_camera_publisher')
+    visitor_detector_model_path = LaunchConfiguration('visitor_detector_model_path')
+    camera_device = LaunchConfiguration('camera_device')
+    camera_image_topic = LaunchConfiguration('camera_image_topic')
+    camera_width = LaunchConfiguration('camera_width')
+    camera_height = LaunchConfiguration('camera_height')
+    camera_fps = LaunchConfiguration('camera_fps')
 
     resolved_asr_profile = PythonExpression([
         "'", asr_profile, "' if '", asr_profile, "' else ('", profile_name, "' if '", profile_name, "' else 'qwen3_asr_0_6b_cpu')"
@@ -270,6 +282,64 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    def _build_visitor_detection_action(context, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        del args, kwargs
+        if context.perform_substitution(enable_visitor_detection).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+            return []
+        detector_model_path = context.perform_substitution(visitor_detector_model_path).strip()
+        if not detector_model_path:
+            for candidate in (
+                '/tmp/visitor_models/face_detection_yunet_2023mar.onnx',
+                str(Path.cwd() / 'models' / 'face_detection_yunet_2023mar.onnx'),
+            ):
+                if Path(candidate).is_file():
+                    detector_model_path = candidate
+                    break
+        reception_params_file_value = context.perform_substitution(reception_params_file)
+        command: list[str] = [
+            str(Path.cwd() / '.venv' / 'bin' / 'python'),
+            '-m',
+            'ros2_reception_orchestrator.visitor_detection',
+            '--ros-args',
+            '--params-file',
+            reception_params_file_value,
+            '-p',
+            'detector_backend:=opencv_haar_upperbody',
+        ]
+        if detector_model_path:
+            command.extend(['-p', f'detector_model_path:={detector_model_path}'])
+        return [
+            ExecuteProcess(
+                cmd=command,
+                name='visitor_detection_node',
+                output='screen',
+            )
+        ]
+
+    def _build_camera_publisher_action(context, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        del args, kwargs
+        if context.perform_substitution(enable_visitor_detection).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+            return []
+        if context.perform_substitution(enable_camera_publisher).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+            return []
+        return [
+            Node(
+                package='ros2_reception_orchestrator',
+                executable='camera_image_publisher',
+                name='camera_image_publisher',
+                output='screen',
+                parameters=[
+                    {
+                        'camera_device': context.perform_substitution(camera_device).strip() or '/dev/video0',
+                        'image_topic': context.perform_substitution(camera_image_topic).strip() or '/camera/image_raw',
+                        'width': int(context.perform_substitution(camera_width).strip() or '640'),
+                        'height': int(context.perform_substitution(camera_height).strip() or '480'),
+                        'fps': float(context.perform_substitution(camera_fps).strip() or '30.0'),
+                    }
+                ],
+            )
+        ]
+
     discord_bridge = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -337,6 +407,8 @@ def generate_launch_description() -> LaunchDescription:
                 'conversation.trace_topic': '/reception/conversation_trace',
                 'llm.status_topic': '/llm/status',
                 'chat.status_topic': '/chat_bridge/status',
+                'visitor_detection.state_topic': '/visitor_detection/state',
+                'visitor_detection.event_topic': '/visitor_detection/events',
             },
         ],
     )
@@ -464,6 +536,46 @@ def generate_launch_description() -> LaunchDescription:
                 description='Playback sample rate for the TTS server.',
             ),
             DeclareLaunchArgument(
+                'enable_visitor_detection',
+                default_value='true',
+                description='Launch the visitor detection node.',
+            ),
+            DeclareLaunchArgument(
+                'enable_camera_publisher',
+                default_value='true',
+                description='Launch a simple OpenCV camera publisher.',
+            ),
+            DeclareLaunchArgument(
+                'visitor_detector_model_path',
+                default_value='',
+                description='Path to the face detector ONNX model.',
+            ),
+            DeclareLaunchArgument(
+                'camera_device',
+                default_value='/dev/video0',
+                description='Camera device path for the built-in image publisher.',
+            ),
+            DeclareLaunchArgument(
+                'camera_image_topic',
+                default_value='/camera/image_raw',
+                description='Image topic for the built-in camera publisher.',
+            ),
+            DeclareLaunchArgument(
+                'camera_width',
+                default_value='640',
+                description='Camera width for the built-in camera publisher.',
+            ),
+            DeclareLaunchArgument(
+                'camera_height',
+                default_value='480',
+                description='Camera height for the built-in camera publisher.',
+            ),
+            DeclareLaunchArgument(
+                'camera_fps',
+                default_value='30.0',
+                description='Camera FPS for the built-in camera publisher.',
+            ),
+            DeclareLaunchArgument(
                 'enable_demo_gui',
                 default_value='false',
                 description='Launch the localhost reception demo dashboard.',
@@ -483,6 +595,8 @@ def generate_launch_description() -> LaunchDescription:
             llm_stack,
             tts_stack,
             discord_bridge,
+            OpaqueFunction(function=_build_camera_publisher_action),
+            OpaqueFunction(function=_build_visitor_detection_action),
             semantic_extractor,
             response_planner,
             reception_orchestrator,

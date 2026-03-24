@@ -350,6 +350,10 @@ def build_reception_slot_extract_prompt(
             '返答は1行JSONのみ。',
             '例1: target_fields=name なら、最新発話に明示された新しい名前だけを返してください。',
             '例2: target_fields=affiliation,purpose なら、同じ発話に所属と用件が両方明示されていれば両方返してください。',
+            '例3: 直前に名前を聞かれた後で latest_utterance=「島中です。いや、だから芝原工業大学です。」 なら、'
+            '{"name":"島中","affiliation":"芝原工業大学","purpose":null} を返してください。',
+            '例4: 直前に所属を聞かれた後で latest_utterance=「いや、だから芝原工業大学です。」 なら、'
+            '{"name":null,"affiliation":"芝原工業大学","purpose":null} を返してください。',
         ]
     )
 

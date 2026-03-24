@@ -42,6 +42,8 @@ setup(
             'semantic_extractor_server = ros2_reception_orchestrator.semantic_extractor_server:main',
             'response_planner_server = ros2_reception_orchestrator.response_planner_server:main',
             'reception_demo_dashboard = ros2_reception_orchestrator.demo_dashboard:main',
+            'camera_image_publisher = ros2_reception_orchestrator.camera_image_publisher:main',
+            'visitor_detection_node = ros2_reception_orchestrator.visitor_detection:main',
         ],
     },
 )
