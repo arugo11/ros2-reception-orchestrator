@@ -15,9 +15,13 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
 
 from asr_interfaces.msg import Utterance
 from reception_interfaces.action import ExtractTurn
+from reception_interfaces.action import RenderDialog
 from reception_interfaces.msg import BeliefOperation
 from reception_interfaces.msg import ChatOutboxItem
 from reception_interfaces.msg import ConversationTrace
@@ -26,6 +30,8 @@ from reception_interfaces.msg import ExecutionEvent
 from reception_interfaces.msg import SessionStateV2
 from reception_interfaces.msg import SlotProvenance
 from reception_interfaces.msg import TurnEnvelope
+from reception_interfaces.msg import VisitorDetectionEvent
+from reception_interfaces.msg import VisitorDetectionState
 from reception_interfaces.msg import VisitorInfo
 from ros2_chat_interfaces.msg import ChatMessage
 from ros2_chat_interfaces.msg import ChatTarget
@@ -34,20 +40,29 @@ from ros2_chat_interfaces.srv import SendMessage
 from ros2_vllm.utils import extract_completion_text
 from ros2_vllm.vllm_client import VllmClient
 from ros2_vllm_interfaces.action import Chat
+from ros2_vllm_interfaces.msg import ChatMessage as LlmChatMessage
 from ros2_vllm_interfaces.msg import LlmStatus
 from tts_msgs.action import Speak
 
 from .conversation_log import ConversationLogWriter
+from .conversation_context import clone_chat_messages
+from .conversation_context import make_chat_message
 from .conversation_trace import build_conversation_trace_message
 from .effect_executor_v2 import EffectExecutor
 from .llm_stage_utils import extract_json_object
 from .llm_stage_utils import wait_future
 from .prompt_templates import RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA
+from .prompt_templates import RECEPTION_SLOT_COMMIT_JSON_SCHEMA
+from .prompt_templates import RECEPTION_SLOT_COMMIT_SYSTEM_PROMPT
+from .prompt_templates import RECEPTION_FIELD_COMMIT_JSON_SCHEMA
+from .prompt_templates import RECEPTION_FIELD_COMMIT_SYSTEM_PROMPT
 from .prompt_templates import RECEPTION_REPAIR_SYSTEM_PROMPT
 from .prompt_templates import RECEPTION_SLOT_EXTRACT_JSON_SCHEMA
 from .prompt_templates import RECEPTION_SLOT_NORMALIZE_JSON_SCHEMA
 from .prompt_templates import RECEPTION_SLOT_NORMALIZE_SYSTEM_PROMPT
 from .prompt_templates import build_reception_confirmation_rescue_prompt
+from .prompt_templates import build_reception_slot_commit_prompt
+from .prompt_templates import build_reception_field_commit_prompt
 from .prompt_templates import build_reception_slot_extract_prompt
 from .prompt_templates import build_reception_slot_normalize_prompt
 from .response_planner_server import _fallback_dialog_text
@@ -78,9 +93,17 @@ class _QueueSecretaryEvent:
     reply: SecretaryReplyData
 
 
+@dataclass(slots=True)
+class _QueueVisitorEvent:
+    event_type: str
+    confidence: float = 0.0
+    detail: str = ''
+
+
 class ReceptionOrchestratorNodeV2(Node):
     _READY_MARKER = 'Conversation backends ready: ASR, LLM, and TTS are available'
-    _READY_ANNOUNCEMENT_SEGMENTS = (
+    _READY_ANNOUNCEMENT_SEGMENTS = (('受付システムの準備ができました。', 'ja'),)
+    _VISITOR_GREETING_SEGMENTS = (
         ('こんにちは。', 'ja'),
         ('Welcome to S I T.', 'en'),
     )
@@ -100,11 +123,18 @@ class ReceptionOrchestratorNodeV2(Node):
             flush_on_session_switch=self._conversation_log_flush_on_session_switch,
         )
         self._client_callback_group = ReentrantCallbackGroup()
+        self._session_transcript: list[LlmChatMessage] = []
 
         self._extract_client = ActionClient(
             self,
             ExtractTurn,
             self._extract_action_name,
+            callback_group=self._client_callback_group,
+        )
+        self._render_client = ActionClient(
+            self,
+            RenderDialog,
+            self._render_action_name,
             callback_group=self._client_callback_group,
         )
         self._chat_client = ActionClient(
@@ -149,6 +179,18 @@ class ReceptionOrchestratorNodeV2(Node):
             self._on_llm_status,
             30,
         )
+        self._visitor_event_subscription = self.create_subscription(
+            VisitorDetectionEvent,
+            self._visitor_detection_event_topic,
+            self._on_visitor_detection_event,
+            30,
+        )
+        self._visitor_state_subscription = self.create_subscription(
+            VisitorDetectionState,
+            self._visitor_detection_state_topic,
+            self._on_visitor_detection_state,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
 
         self._session_state_publisher = self.create_publisher(SessionStateV2, self._session_state_topic, 20)
         self._event_publisher = self.create_publisher(ExecutionEvent, self._execution_event_topic, 50)
@@ -172,6 +214,9 @@ class ReceptionOrchestratorNodeV2(Node):
         self._active_tts_goal_lock = threading.RLock()
         self._active_tts_goal_handle = None
         self._active_tts_command_id = ''
+        self._reception_active = False
+        self._pending_visitor_trigger: _QueueVisitorEvent | None = None
+        self._visitor_present_latched = False
 
         self._reducer = SessionReducer(confidence_threshold=self._semantic_confidence_threshold)
         self._ingestor = TurnIngestor(merge_window_sec=self._followup_merge_window_sec)
@@ -213,10 +258,13 @@ class ReceptionOrchestratorNodeV2(Node):
         self.declare_parameter('llm.vllm_port', 8000)
         self.declare_parameter('llm.request_timeout_sec', 60.0)
         self.declare_parameter('extract.action_name', '/reception/extract_turn')
+        self.declare_parameter('render.action_name', '/reception/render_dialog')
         self.declare_parameter('tts.action_name', '/tts/speak')
         self.declare_parameter('session.state_topic', '/reception/session_state')
         self.declare_parameter('execution.event_topic', '/reception/events')
         self.declare_parameter('conversation.trace_topic', '/reception/conversation_trace')
+        self.declare_parameter('visitor_detection.event_topic', '/visitor_detection/events')
+        self.declare_parameter('visitor_detection.state_topic', '/visitor_detection/state')
         self.declare_parameter('conversation_log.enabled', True)
         self.declare_parameter(
             'conversation_log.output_dir',
@@ -243,10 +291,13 @@ class ReceptionOrchestratorNodeV2(Node):
         self._llm_vllm_port = int(self.get_parameter('llm.vllm_port').value)
         self._llm_request_timeout_sec = float(self.get_parameter('llm.request_timeout_sec').value)
         self._extract_action_name = str(self.get_parameter('extract.action_name').value)
+        self._render_action_name = str(self.get_parameter('render.action_name').value)
         self._tts_action_name = str(self.get_parameter('tts.action_name').value)
         self._session_state_topic = str(self.get_parameter('session.state_topic').value)
         self._execution_event_topic = str(self.get_parameter('execution.event_topic').value)
         self._conversation_trace_topic = str(self.get_parameter('conversation.trace_topic').value)
+        self._visitor_detection_event_topic = str(self.get_parameter('visitor_detection.event_topic').value)
+        self._visitor_detection_state_topic = str(self.get_parameter('visitor_detection.state_topic').value)
         self._conversation_log_enabled = bool(self.get_parameter('conversation_log.enabled').value)
         self._conversation_log_output_dir = str(self.get_parameter('conversation_log.output_dir').value).strip()
         self._conversation_log_format = str(self.get_parameter('conversation_log.format').value).strip()
@@ -267,6 +318,10 @@ class ReceptionOrchestratorNodeV2(Node):
             if self._dependencies_ready() and not self._ready_announcement_sent:
                 self._submit_ready_announcement()
                 self._ready_announcement_sent = True
+            if self._dependencies_ready() and self._pending_visitor_trigger is not None and not self._reception_active:
+                pending = self._pending_visitor_trigger
+                self._pending_visitor_trigger = None
+                self._activate_reception(pending)
 
             session_id = self._reducer.state.session_id
             flushed = self._ingestor.flush_due(session_id=session_id)
@@ -332,6 +387,9 @@ class ReceptionOrchestratorNodeV2(Node):
         self._pending_turn_events = []
         self._ingestor.reset()
         self._reducer.reset()
+        self._session_transcript = []
+        self._reception_active = False
+        self._pending_visitor_trigger = None
 
     @staticmethod
     def _session_has_user_activity(state: SessionStateData) -> bool:
@@ -352,10 +410,16 @@ class ReceptionOrchestratorNodeV2(Node):
         return (
             self._llm_backend_ready
             and self._chat_client.server_is_ready()
+            and self._render_client.server_is_ready()
             and self._tts_client.server_is_ready()
         )
 
     def _on_utterance(self, msg: Utterance) -> None:
+        if not self._reception_active:
+            self.get_logger().info(
+                f'[ASR] ignored until reception start text={self._short(msg.text)}'
+            )
+            return
         local_tts_active = self._effect_executor.is_tts_active()
         if local_tts_active:
             self._effect_executor.cancel_pending_tts(detail='barge_in_pending_tts')
@@ -434,6 +498,49 @@ class ReceptionOrchestratorNodeV2(Node):
             )
         )
 
+    def _on_visitor_detection_event(self, msg: VisitorDetectionEvent) -> None:
+        event_type = str(msg.event_type or '').strip()
+        detail = str(msg.detail or '').strip()
+        self._publish_trace_event(
+            TraceEventData(
+                event_type='VISITOR_DETECTION_EVENT',
+                payload_json=json.dumps(
+                    {
+                        'event_type': event_type,
+                        'confidence': float(msg.confidence),
+                        'detail': detail,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            turn_seq=self._reducer.state.latest_applied_turn,
+        )
+        if event_type != 'VISITOR_TRIGGERED':
+            return
+        self._event_queue.put(
+            _QueueVisitorEvent(
+                event_type=event_type,
+                confidence=float(msg.confidence),
+                detail=detail,
+            )
+        )
+
+    def _on_visitor_detection_state(self, msg: VisitorDetectionState) -> None:
+        visitor_present = bool(msg.visitor_present)
+        if not visitor_present:
+            self._visitor_present_latched = False
+            return
+        if self._visitor_present_latched:
+            return
+        self._visitor_present_latched = True
+        self._event_queue.put(
+            _QueueVisitorEvent(
+                event_type='VISITOR_TRIGGERED',
+                confidence=float(msg.confidence),
+                detail=f'state_bootstrap:{msg.detector_backend}',
+            )
+        )
+
     def _worker_loop(self) -> None:
         while not self._shutdown_event.is_set():
             try:
@@ -447,6 +554,8 @@ class ReceptionOrchestratorNodeV2(Node):
                         self._process_turn(item.turn)
                     elif isinstance(item, _QueueSecretaryEvent):
                         self._process_secretary_reply(item.reply)
+                    elif isinstance(item, _QueueVisitorEvent):
+                        self._process_visitor_event(item)
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'worker error: {exc}')
 
@@ -471,6 +580,7 @@ class ReceptionOrchestratorNodeV2(Node):
             return
 
         self._publish_user_trace(turn)
+        self._append_transcript_message('user', turn.text)
         self.get_logger().info(
             '[PIPELINE] turn finalized '
             f'seq={turn.turn_seq} utterance_id={turn.utterance_id} '
@@ -574,6 +684,60 @@ class ReceptionOrchestratorNodeV2(Node):
                     ensure_ascii=False,
                 ),
                 dialog_act='system_ready',
+            )
+            self._publish_system_trace(tts_command)
+            self._effect_executor.submit(tts_command, immediate_non_tts=self._invoke_non_tts_command)
+
+    def _process_visitor_event(self, event: _QueueVisitorEvent) -> None:
+        if event.event_type != 'VISITOR_TRIGGERED':
+            return
+        if self._reception_active:
+            self.get_logger().info('[SESSION] visitor trigger ignored because reception is already active')
+            return
+        if not self._dependencies_ready():
+            self._pending_visitor_trigger = event
+            self.get_logger().info('[SESSION] deferred visitor trigger until conversation backends are ready')
+            return
+        self._activate_reception(event)
+
+    def _activate_reception(self, event: _QueueVisitorEvent) -> None:
+        if self._reception_active:
+            return
+        self._reception_active = True
+        self._publish_trace_event(
+            TraceEventData(
+                event_type='SESSION_STARTED',
+                payload_json=json.dumps(
+                    {
+                        'trigger_source': 'visitor_detection',
+                        'detail': event.detail,
+                        'confidence': float(event.confidence),
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            turn_seq=0,
+        )
+        self.get_logger().info(
+            '[SESSION] reception started by visitor detection '
+            f'confidence={event.confidence:.2f} detail={event.detail}'
+        )
+        self._submit_visitor_greeting()
+        self._publish_state()
+
+    def _submit_visitor_greeting(self) -> None:
+        self.get_logger().info('[TTS] visitor greeting submitting bilingual segments')
+        for index, (text, language) in enumerate(self._VISITOR_GREETING_SEGMENTS):
+            tts_command = OrchestratorCommandData(
+                command_type=ExecutionCommand.COMMAND_TTS,
+                command_id=uuid4().hex,
+                session_id=self._reducer.state.session_id,
+                turn_seq=index,
+                payload_json=json.dumps(
+                    {'text': text, 'dialog_act': 'visitor_greeting', 'language': language},
+                    ensure_ascii=False,
+                ),
+                dialog_act='visitor_greeting',
             )
             self._publish_system_trace(tts_command)
             self._effect_executor.submit(tts_command, immediate_non_tts=self._invoke_non_tts_command)
@@ -796,7 +960,7 @@ class ReceptionOrchestratorNodeV2(Node):
         ]
         if self._reducer.state.phase != 'collecting':
             return decision
-        if len(substantive_ops) != 1:
+        if not substantive_ops:
             return decision
         if len(turn.text.strip()) < 12:
             return decision
@@ -823,48 +987,189 @@ class ReceptionOrchestratorNodeV2(Node):
             return decision
 
         extracted = {
-            slot: str(payload.get(slot) or '').strip()
+            slot: self._postprocess_normalized_slot_value(slot, payload.get(slot)) or ''
             for slot in ('name', 'affiliation', 'purpose')
-            if str(payload.get(slot) or '').strip()
         }
-        refined_slot, refined_value = self._choose_refined_slot_candidate(
-            turn=turn,
-            extracted=extracted,
-        )
-        if refined_slot == 'none' or not refined_value:
+        extracted = {slot: value for slot, value in extracted.items() if value}
+        extracted = self._commit_extracted_slot_candidates(turn, extracted)
+        if not extracted:
             return decision
 
-        current_op = substantive_ops[0]
-        if refined_slot == current_op.slot and refined_value == current_op.value:
-            return decision
-
-        updated_operations: list[BeliefOperationData] = []
-        for operation in decision.operations:
-            if operation is current_op:
-                updated_operations.append(
-                    BeliefOperationData(
-                        op=operation.op,
-                        slot=refined_slot,
-                        value=refined_value,
-                        grounded_text=turn.text,
-                        confidence=operation.confidence,
-                    )
+        updated_operations = list(decision.operations)
+        op_index_by_slot = {
+            operation.slot: index
+            for index, operation in enumerate(updated_operations)
+            if operation.op in {'set_slot', 'replace_slot'} and operation.slot in {'name', 'affiliation', 'purpose'}
+        }
+        changed = False
+        if len(extracted) == 1 and len(substantive_ops) == 1:
+            refined_slot, refined_value = next(iter(extracted.items()))
+            current_operation = substantive_ops[0]
+            current_index = updated_operations.index(current_operation)
+            if current_operation.slot != refined_slot or current_operation.value != refined_value:
+                updated_operations[current_index] = BeliefOperationData(
+                    op=current_operation.op,
+                    slot=refined_slot,
+                    value=refined_value,
+                    grounded_text=turn.text,
+                    confidence=current_operation.confidence,
                 )
-            else:
-                updated_operations.append(operation)
+                op_index_by_slot.pop(current_operation.slot, None)
+                op_index_by_slot[refined_slot] = current_index
+                changed = True
+
+        for slot in ('name', 'affiliation', 'purpose'):
+            refined_value = extracted.get(slot, '')
+            if not refined_value:
+                continue
+            current_value = getattr(self._reducer.state.working_info, slot)
+            grounded_text = turn.text
+            if slot in op_index_by_slot:
+                current_operation = updated_operations[op_index_by_slot[slot]]
+                if current_operation.value == refined_value:
+                    continue
+                updated_operations[op_index_by_slot[slot]] = BeliefOperationData(
+                    op=current_operation.op,
+                    slot=slot,
+                    value=refined_value,
+                    grounded_text=grounded_text,
+                    confidence=current_operation.confidence,
+                )
+                changed = True
+                continue
+
+            op_name = 'replace_slot' if current_value else 'set_slot'
+            updated_operations.append(
+                BeliefOperationData(
+                    op=op_name,
+                    slot=slot,
+                    value=refined_value,
+                    grounded_text=grounded_text,
+                    confidence=decision.confidence,
+                )
+            )
+            changed = True
+
+        if not changed:
+            return decision
+
+        target_slot = decision.target_slot
+        if target_slot not in extracted and self._reducer.state.focus_slot in extracted:
+            target_slot = self._reducer.state.focus_slot
+        elif target_slot not in extracted:
+            target_slot = next(iter(extracted.keys()), decision.target_slot)
 
         return SemanticDecisionData(
             turn_seq=decision.turn_seq,
             speech_act=decision.speech_act,
             detected_language=decision.detected_language,
-            target_slot=refined_slot,
+            target_slot=target_slot,
             ambiguity=decision.ambiguity,
             requires_confirmation=decision.requires_confirmation,
             confidence=decision.confidence,
             evidence=f'{decision.evidence}|long_slot_refine',
             operations=updated_operations,
-            grounded_segments=[refined_value],
+            grounded_segments=list(dict.fromkeys([*decision.grounded_segments, *extracted.values()])),
         )
+
+    def _commit_extracted_slot_candidates(
+        self,
+        turn: TurnEnvelopeData,
+        extracted: dict[str, str],
+    ) -> dict[str, str]:
+        if not extracted:
+            return {}
+
+        snapshot = self._legacy_snapshot_for_rescue(turn)
+        primary_field = (
+            self._reducer.state.focus_slot
+            if self._reducer.state.focus_slot in {'name', 'affiliation', 'purpose'}
+            else None
+        )
+        try:
+            raw = self._invoke_chat_action(
+                session_id=f'{turn.session_id}:slot-commit:{turn.turn_seq}',
+                user_message=build_reception_slot_commit_prompt(
+                    snapshot,
+                    turn.text,
+                    primary_field=primary_field,
+                    extracted_name=extracted.get('name'),
+                    extracted_affiliation=extracted.get('affiliation'),
+                    extracted_purpose=extracted.get('purpose'),
+                ),
+                system_prompt=RECEPTION_SLOT_COMMIT_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=96,
+                timeout_sec=20.0,
+                response_json_schema=RECEPTION_SLOT_COMMIT_JSON_SCHEMA,
+            )
+            payload = extract_json_object(raw)
+        except Exception:  # noqa: BLE001
+            payload = None
+
+        committed = dict(extracted)
+        if isinstance(payload, dict):
+            committed = {}
+            for slot in ('name', 'affiliation', 'purpose'):
+                if slot not in payload:
+                    continue
+                normalized = self._postprocess_normalized_slot_value(slot, payload.get(slot))
+                if normalized:
+                    committed[slot] = normalized
+
+        if not committed:
+            return {}
+        return committed
+
+    def _validate_extracted_slot_candidates(
+        self,
+        turn: TurnEnvelopeData,
+        extracted: dict[str, str],
+    ) -> dict[str, str]:
+        validated: dict[str, str] = {}
+        for slot, candidate_value in extracted.items():
+            committed = self._validate_field_candidate(
+                turn=turn,
+                target_field=slot,
+                candidate_value=candidate_value,
+            )
+            if committed:
+                validated[slot] = committed
+        return validated
+
+    def _validate_field_candidate(
+        self,
+        *,
+        turn: TurnEnvelopeData,
+        target_field: str,
+        candidate_value: str,
+    ) -> str | None:
+        if target_field not in {'name', 'affiliation', 'purpose'}:
+            return None
+        snapshot = self._legacy_snapshot_for_rescue(turn)
+        primary_field = self._reducer.state.focus_slot if self._reducer.state.focus_slot in {'name', 'affiliation', 'purpose'} else None
+        try:
+            raw = self._invoke_chat_action(
+                session_id=f'{turn.session_id}:field-commit:{turn.turn_seq}:{target_field}',
+                user_message=build_reception_field_commit_prompt(
+                    snapshot,
+                    turn.text,
+                    primary_field=primary_field,
+                    target_field=target_field,
+                    candidate_value=candidate_value,
+                ),
+                system_prompt=RECEPTION_FIELD_COMMIT_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=48,
+                timeout_sec=20.0,
+                response_json_schema=RECEPTION_FIELD_COMMIT_JSON_SCHEMA,
+            )
+            payload = extract_json_object(raw)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return self._postprocess_normalized_slot_value(target_field, payload.get('value'))
 
     def _normalize_slot_operation_values(
         self,
@@ -876,6 +1181,8 @@ class ReceptionOrchestratorNodeV2(Node):
             if op.op in {'set_slot', 'replace_slot'} and op.slot in {'name', 'affiliation', 'purpose'} and op.value
         ]
         if not substantive_ops:
+            return decision
+        if len(substantive_ops) > 1 and 'long_slot_refine' in str(decision.evidence or ''):
             return decision
 
         snapshot = self._legacy_snapshot_for_rescue(turn)
@@ -1145,29 +1452,64 @@ class ReceptionOrchestratorNodeV2(Node):
             self._reducer.state.working_info.purpose,
             self._reducer.state.response_language,
         )
-        if dialog_act != 'relay_secretary':
+        if not self._render_client.wait_for_server(timeout_sec=5.0):
+            self._publish_execution_event(
+                cmd,
+                ExecutionEvent.STATUS_FAILED,
+                ExecutionEvent.REASON_TIMEOUT,
+                'render_action_unavailable',
+            )
+            self.get_logger().warn(
+                f'[LLM-S2] render action unavailable seq={turn_seq}, fallback used'
+            )
+            return fallback
+
+        goal = RenderDialog.Goal()
+        goal.session_id = self._reducer.state.session_id
+        goal.turn_seq = int(turn_seq)
+        goal.dialog_act = dialog_act
+        goal.phase = self._reducer.state.phase
+        goal.working_info = self._to_visitor_msg(self._reducer.state.working_info)
+        goal.committed_info = self._to_visitor_msg(self._reducer.state.committed_info)
+        goal.focus_slot = self._reducer.state.focus_slot
+        goal.pending_clarification_slot = self._reducer.state.pending_clarification_slot
+        goal.response_language = self._reducer.state.response_language
+        goal.latest_user_text = latest_user_text
+        goal.secretary_reply_text = secretary_reply_text
+        goal.transcript_messages = clone_chat_messages(self._session_transcript)
+
+        try:
+            goal_handle = wait_future(self._render_client.send_goal_async(goal), timeout_sec=10.0)
+            if goal_handle is None or not goal_handle.accepted:
+                raise RuntimeError(f'{self._render_action_name} goal rejected')
+            wrapped = wait_future(goal_handle.get_result_async(), timeout_sec=45.0)
+            if wrapped is None:
+                raise RuntimeError(f'{self._render_action_name} timeout waiting result')
+            result = wrapped.result
+            rendered = str(getattr(result, 'text', '') or '').strip()
+            text = rendered or fallback
+            used_fallback = bool(getattr(result, 'used_fallback', False)) or not bool(rendered)
             self._publish_execution_event(
                 cmd,
                 ExecutionEvent.STATUS_SUCCEEDED,
                 ExecutionEvent.REASON_NONE,
-                'render_template_fallback',
+                'render_action_fallback' if used_fallback else 'render_action_succeeded',
             )
             self.get_logger().info(
-                f'[LLM-S2] template result seq={turn_seq} text={self._short(fallback)}'
+                f'[LLM-S2] render result seq={turn_seq} fallback={used_fallback} text={self._short(text)}'
+            )
+            return text
+        except Exception as exc:  # noqa: BLE001
+            self._publish_execution_event(
+                cmd,
+                ExecutionEvent.STATUS_FAILED,
+                ExecutionEvent.REASON_INTERNAL_ERROR,
+                f'render_failed:{exc}',
+            )
+            self.get_logger().warn(
+                f'[LLM-S2] render failed seq={turn_seq}, fallback used: {exc}'
             )
             return fallback
-
-        text = secretary_reply_text.strip() or fallback
-        self._publish_execution_event(
-            cmd,
-            ExecutionEvent.STATUS_SUCCEEDED,
-            ExecutionEvent.REASON_NONE,
-            'render_secretary_reply',
-        )
-        self.get_logger().info(
-            f'[LLM-S2] secretary relay result seq={turn_seq} text={self._short(text)}'
-        )
-        return text
 
     def _invoke_non_tts_command(self, command: OrchestratorCommandData) -> tuple[bool, str]:
         del command
@@ -1307,6 +1649,8 @@ class ReceptionOrchestratorNodeV2(Node):
         state = self._reducer.state
         prompt = (
             'Task: semantic extraction for reception flow.\n'
+            'The visible conversation transcript is provided separately as chat history.\n'
+            'Use the full transcript to interpret the latest user utterance in session context.\n'
             f'phase={state.phase}\n'
             f'current_response_language={self._stage1_language_hint()}\n'
             f'working_name={state.working_info.name}\n'
@@ -1344,16 +1688,27 @@ class ReceptionOrchestratorNodeV2(Node):
         max_tokens: int,
         timeout_sec: float,
         response_json_schema: str = '',
+        messages: list[LlmChatMessage] | None = None,
     ) -> str:
         del session_id, timeout_sec
         client = self._direct_vllm_client
         if client is None:
             raise RuntimeError('direct vLLM client is not ready')
+        composed_messages = [{'role': 'system', 'content': system_prompt}]
+        transcript_messages = clone_chat_messages(
+            self._session_transcript if messages is None else messages
+        )
+        for message in transcript_messages:
+            composed_messages.append(
+                {
+                    'role': str(message.role or 'user'),
+                    'content': str(message.content or ''),
+                }
+            )
+        if user_message.strip():
+            composed_messages.append({'role': 'user', 'content': user_message})
         completion = client.chat_completion(
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_message},
-            ],
+            messages=composed_messages,
             temperature=float(temperature),
             max_tokens=int(max_tokens),
             stream=False,
@@ -1388,6 +1743,7 @@ class ReceptionOrchestratorNodeV2(Node):
         goal.last_system_act = self._reducer.state.last_system_act
         goal.pending_clarification_slot = self._reducer.state.pending_clarification_slot
         goal.current_response_language = self._stage1_language_hint()
+        goal.transcript_messages = clone_chat_messages(self._session_transcript)
 
         goal_handle = wait_future(self._extract_client.send_goal_async(goal), timeout_sec=10.0)
         if goal_handle is None or not goal_handle.accepted:
@@ -1464,6 +1820,7 @@ class ReceptionOrchestratorNodeV2(Node):
     def _publish_assistant_trace(self, command: OrchestratorCommandData) -> None:
         payload = self._decode_command_payload(command)
         payload_json = json.dumps(payload, ensure_ascii=False)
+        self._append_transcript_message('assistant', str(payload.get('text', '')))
         self._publish_conversation_trace(
             role=ConversationTrace.ROLE_ASSISTANT,
             session_id=command.session_id,
@@ -1481,6 +1838,7 @@ class ReceptionOrchestratorNodeV2(Node):
     def _publish_system_trace(self, command: OrchestratorCommandData) -> None:
         payload = self._decode_command_payload(command)
         payload_json = json.dumps(payload, ensure_ascii=False)
+        self._append_transcript_message('assistant', str(payload.get('text', '')))
         self._publish_conversation_trace(
             role=ConversationTrace.ROLE_SYSTEM,
             session_id=command.session_id,
@@ -1554,6 +1912,12 @@ class ReceptionOrchestratorNodeV2(Node):
             self._conversation_log_writer.record(msg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'conversation log writer failed: {exc}')
+
+    def _append_transcript_message(self, role: str, text: str) -> None:
+        message = make_chat_message(role, text)
+        if not message.content:
+            return
+        self._session_transcript.append(message)
 
     def _publish_execution_event(
         self,

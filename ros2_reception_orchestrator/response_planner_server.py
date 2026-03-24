@@ -12,6 +12,7 @@ from rclpy.node import Node
 from reception_interfaces.action import RenderDialog
 from ros2_vllm_interfaces.action import Chat
 
+from .conversation_context import clone_chat_messages
 from .llm_stage_utils import invoke_chat_action
 
 
@@ -86,6 +87,8 @@ class ResponsePlannerServer(Node):
 
         prompt = (
             'Render spoken response for receptionist flow.\n'
+            'The visible conversation transcript is provided separately as chat history.\n'
+            'Use that history to stay consistent with the ongoing reception session.\n'
             f'response_language={response_language}\n'
             f'dialog_act={req.dialog_act}\n'
             f'phase={req.phase}\n'
@@ -112,6 +115,7 @@ class ResponsePlannerServer(Node):
                 max_tokens=self._max_tokens,
                 stateless=True,
                 response_json_schema='',
+                messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
             )
             cleaned = text.strip()
             result.text = cleaned or fallback

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from types import SimpleNamespace
 
 from ros2_reception_orchestrator.node_v2 import ReceptionOrchestratorNodeV2
+from ros2_reception_orchestrator.node_v2 import _QueueVisitorEvent
 from ros2_reception_orchestrator.llm_stage_utils import extract_json_object
 from ros2_reception_orchestrator.v2_types import BeliefOperationData
 from ros2_reception_orchestrator.v2_types import SemanticDecisionData
@@ -126,6 +128,8 @@ def test_handle_session_inactivity_resets_active_session_after_timeout() -> None
     )
     node._publish_conversation_trace_calls = []
     node._publish_conversation_trace = lambda **kwargs: node._publish_conversation_trace_calls.append(kwargs)
+    node._reception_active = True
+    node._pending_visitor_trigger = object()
     node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None)
 
     node._handle_session_inactivity()
@@ -135,9 +139,46 @@ def test_handle_session_inactivity_resets_active_session_after_timeout() -> None
     assert node._conversation_log_writer.flush_all_called is True
     assert node._pending_turn_events == []
     assert node._effect_executor.calls == [{'detail': 'session_timeout_pending_tts'}]
+    assert node._reception_active is False
+    assert node._pending_visitor_trigger is None
     assert len(node._publish_conversation_trace_calls) == 1
     assert node._publish_conversation_trace_calls[0]['session_id'] == 'expired-session'
     assert node._publish_conversation_trace_calls[0]['event_type'] == 'SESSION_TIMEOUT'
+
+
+def test_process_visitor_event_activates_reception_when_ready() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._reception_active = False
+    node._pending_visitor_trigger = None
+    node._dependencies_ready = lambda: True
+    node._publish_trace_event_calls = []
+    node._publish_trace_event = lambda trace, turn_seq: node._publish_trace_event_calls.append((trace, turn_seq))
+    node._submit_visitor_greeting_called = False
+    node._submit_visitor_greeting = lambda: setattr(node, '_submit_visitor_greeting_called', True)
+    node._publish_state_called = False
+    node._publish_state = lambda: setattr(node, '_publish_state_called', True)
+    node._reducer = SimpleNamespace(state=SessionStateData(session_id='session-1'))
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    node._process_visitor_event(_QueueVisitorEvent(event_type='VISITOR_TRIGGERED', confidence=0.9, detail=''))
+
+    assert node._reception_active is True
+    assert node._submit_visitor_greeting_called is True
+    assert node._publish_state_called is True
+    assert node._publish_trace_event_calls[0][0].event_type == 'SESSION_STARTED'
+
+
+def test_process_visitor_event_defers_until_ready() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._reception_active = False
+    node._pending_visitor_trigger = None
+    node._dependencies_ready = lambda: False
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    event = _QueueVisitorEvent(event_type='VISITOR_TRIGGERED', confidence=0.75, detail='warmup')
+    node._process_visitor_event(event)
+
+    assert node._pending_visitor_trigger is event
 
 
 def test_extract_json_object_accepts_fenced_json() -> None:
@@ -187,12 +228,158 @@ def test_decision_needs_stage_rescue_for_inform_without_substantive_op_even_with
     assert ReceptionOrchestratorNodeV2._decision_needs_stage_rescue(decision) is True
 
 
+def test_refine_long_slot_decision_adds_missing_slot_from_same_utterance() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._reducer = SimpleNamespace(
+        state=SessionStateData(
+            session_id='session-1',
+            phase='collecting',
+            focus_slot='name',
+            working_info=VisitorInfoData(),
+        )
+    )
+    def _fake_invoke_chat_action(**kwargs: str) -> str:
+        session_id = kwargs['session_id']
+        if session_id.endswith(':extract-long-slot-refine:2'):
+            return json.dumps(
+                {
+                    'name': '島中',
+                    'affiliation': '柴原工業大学',
+                    'purpose': None,
+                },
+                ensure_ascii=False,
+            )
+        if session_id.endswith(':slot-commit:2'):
+            return json.dumps(
+                {
+                    'name': '島中',
+                    'affiliation': '柴原工業大学',
+                    'purpose': None,
+                },
+                ensure_ascii=False,
+            )
+        if session_id.endswith(':field-commit:2:name'):
+            return '{"value":"島中"}'
+        if session_id.endswith(':field-commit:2:affiliation'):
+            return '{"value":"柴原工業大学"}'
+        if session_id.endswith(':field-commit:2:purpose'):
+            return '{"value":null}'
+        raise AssertionError(f'unexpected session id: {session_id}')
+
+    node._invoke_chat_action = _fake_invoke_chat_action
+
+    decision = SemanticDecisionData(
+        turn_seq=2,
+        speech_act='inform',
+        detected_language='ja',
+        target_slot='affiliation',
+        ambiguity='low',
+        confidence=0.94,
+        evidence='test',
+        operations=[
+            BeliefOperationData(
+                op='set_slot',
+                slot='affiliation',
+                value='柴原工業大学',
+                grounded_text='柴原工業大学',
+                confidence=0.94,
+            )
+        ],
+        grounded_segments=['柴原工業大学'],
+    )
+    turn = TurnEnvelopeData(
+        session_id='session-1',
+        turn_seq=2,
+        utterance_id='utt-1',
+        text='島中です。いや、だから芝原工業大学です。',
+        captured_during_tts=False,
+        asr_confidence=0.98,
+    )
+
+    refined = node._refine_long_slot_decision(turn, decision)
+
+    slots = {(operation.slot, operation.value) for operation in refined.operations}
+    assert ('name', '島中') in slots
+    assert ('affiliation', '柴原工業大学') in slots
+
+
+def test_call_render_stage_uses_render_action_result(monkeypatch) -> None:
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.text = '承知しました。ご所属をもう一度お願いいたします。'
+            self.used_fallback = False
+
+    class _FakeWrapped:
+        def __init__(self) -> None:
+            self.result = _FakeResult()
+
+    class _FakeGoalHandle:
+        def __init__(self) -> None:
+            self.accepted = True
+
+        def get_result_async(self):
+            return _FakeWrapped()
+
+    class _FakeRenderClient:
+        def __init__(self) -> None:
+            self.goal = None
+
+        def wait_for_server(self, timeout_sec):
+            del timeout_sec
+            return True
+
+        def send_goal_async(self, goal):
+            self.goal = goal
+            return _FakeGoalHandle()
+
+    monkeypatch.setattr('ros2_reception_orchestrator.node_v2.wait_future', lambda future, timeout_sec: future)
+
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._render_action_name = '/reception/render_dialog'
+    node._render_client = _FakeRenderClient()
+    node._session_transcript = []
+    node._publish_execution_event = lambda *args, **kwargs: None
+    node._short = lambda text: text
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None, warn=lambda *args, **kwargs: None)
+    node._reducer = SimpleNamespace(
+        state=SessionStateData(
+            session_id='session-2',
+            phase='collecting',
+            response_language='ja',
+            focus_slot='affiliation',
+            pending_clarification_slot='affiliation',
+            working_info=VisitorInfoData(name='島中'),
+            committed_info=VisitorInfoData(),
+        )
+    )
+
+    text = node._call_render_stage(
+        turn_seq=5,
+        dialog_act='clarify_affiliation',
+        latest_user_text='いや、だから芝原工業大学です。',
+        secretary_reply_text='',
+    )
+
+    assert text == '承知しました。ご所属をもう一度お願いいたします。'
+    assert node._render_client.goal.dialog_act == 'clarify_affiliation'
+
+
 def test_refine_long_slot_decision_can_retarget_single_slot_extraction() -> None:
     node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
     node._reducer = SimpleNamespace(
         state=SessionStateData(session_id='s', working_info=VisitorInfoData(name='島中', affiliation='須江野県', purpose=''))
     )
-    node._invoke_chat_action = lambda **kwargs: '{"name":null,"affiliation":"菅屋研究室","purpose":null}'
+    def _fake_invoke_chat_action(**kwargs: str) -> str:
+        session_id = kwargs['session_id']
+        if session_id.endswith(':extract-long-slot-refine:4'):
+            return '{"name":null,"affiliation":"菅屋研究室","purpose":null}'
+        if session_id.endswith(':slot-commit:4'):
+            return '{"name":null,"affiliation":"菅屋研究室","purpose":null}'
+        if session_id.endswith(':field-commit:4:affiliation'):
+            return '{"value":"菅屋研究室"}'
+        raise AssertionError(f'unexpected session id: {session_id}')
+
+    node._invoke_chat_action = _fake_invoke_chat_action
 
     decision = SemanticDecisionData(
         turn_seq=4,
@@ -220,12 +407,14 @@ def test_refine_long_slot_decision_falls_back_to_per_slot_recovery() -> None:
         session_id = kwargs['session_id']
         if session_id.endswith(':extract-long-slot-refine:4'):
             return '{"name":"島中","affiliation":"菅屋研究室","purpose":"研究室訪問"}'
-        if session_id.endswith(':extract-long-slot-refine:4:name'):
-            return '{"name":null,"affiliation":null,"purpose":null}'
-        if session_id.endswith(':extract-long-slot-refine:4:affiliation'):
+        if session_id.endswith(':slot-commit:4'):
             return '{"name":null,"affiliation":"菅屋研究室","purpose":null}'
-        if session_id.endswith(':extract-long-slot-refine:4:purpose'):
-            return '{"name":null,"affiliation":null,"purpose":null}'
+        if session_id.endswith(':field-commit:4:name'):
+            return '{"value":null}'
+        if session_id.endswith(':field-commit:4:affiliation'):
+            return '{"value":"菅屋研究室"}'
+        if session_id.endswith(':field-commit:4:purpose'):
+            return '{"value":null}'
         raise AssertionError(f'unexpected session id: {session_id}')
 
     node._invoke_chat_action = fake_invoke_chat_action
@@ -242,8 +431,46 @@ def test_refine_long_slot_decision_falls_back_to_per_slot_recovery() -> None:
     refined = node._refine_long_slot_decision(turn, decision)
 
     assert refined.target_slot == 'affiliation'
-    assert refined.operations[0].slot == 'affiliation'
-    assert refined.operations[0].value == '菅屋研究室'
+
+
+def test_commit_extracted_slot_candidates_uses_transcript_aware_slot_commit() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._reducer = SimpleNamespace(
+        state=SessionStateData(
+            session_id='session-3',
+            phase='collecting',
+            focus_slot='name',
+            last_system_act='ask_name',
+            working_info=VisitorInfoData(),
+        )
+    )
+
+    def fake_invoke_chat_action(**kwargs: str) -> str:
+        session_id = kwargs['session_id']
+        if session_id.endswith(':slot-commit:2'):
+            return '{"name":"島中","affiliation":"芝原工業大学","purpose":null}'
+        if session_id.endswith(':field-commit:2:name'):
+            return '{"value":"島中"}'
+        if session_id.endswith(':field-commit:2:affiliation'):
+            return '{"value":"芝原工業大学"}'
+        raise AssertionError(f'unexpected session id: {session_id}')
+
+    node._invoke_chat_action = fake_invoke_chat_action
+    turn = TurnEnvelopeData(
+        session_id='session-3',
+        turn_seq=2,
+        utterance_id='utt-2',
+        text='島中です。いや、だから芝原工業大学です。',
+        captured_during_tts=False,
+        asr_confidence=0.98,
+    )
+
+    committed = node._commit_extracted_slot_candidates(
+        turn,
+        {'name': '島中', 'affiliation': '芝原工業大学'},
+    )
+
+    assert committed == {'name': '島中', 'affiliation': '芝原工業大学'}
 
 
 def test_normalize_slot_operation_values_removes_fillers_from_affiliation_and_purpose() -> None:

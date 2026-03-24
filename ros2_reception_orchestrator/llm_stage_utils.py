@@ -7,6 +7,7 @@ from typing import Any
 from rclpy.action import ActionClient
 
 from ros2_vllm_interfaces.action import Chat
+from ros2_vllm_interfaces.msg import ChatMessage
 
 
 def extract_json_object(raw: str) -> dict[str, Any] | None:
@@ -56,6 +57,7 @@ def invoke_chat_action(
     max_tokens: int,
     stateless: bool,
     response_json_schema: str = '',
+    messages: list[ChatMessage] | None = None,
     server_wait_timeout_sec: float = 10.0,
     total_timeout_sec: float = 90.0,
 ) -> str:
@@ -69,6 +71,8 @@ def invoke_chat_action(
     goal.temperature = float(temperature)
     goal.max_tokens = int(max_tokens)
     goal.stateless = bool(stateless)
+    if hasattr(goal, 'messages'):
+        goal.messages = list(messages or [])
     if hasattr(goal, 'response_json_schema'):
         goal.response_json_schema = response_json_schema or ''
 

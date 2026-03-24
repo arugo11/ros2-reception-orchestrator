@@ -18,6 +18,7 @@ from ros2_vllm_interfaces.action import Chat
 
 from .llm_stage_utils import extract_json_object
 from .llm_stage_utils import invoke_chat_action
+from .conversation_context import clone_chat_messages
 from .prompt_templates import RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA
 from .prompt_templates import RECEPTION_REPAIR_SYSTEM_PROMPT
 from .prompt_templates import RECEPTION_SLOT_EXTRACT_JSON_SCHEMA
@@ -205,6 +206,8 @@ class SemanticExtractorServer(Node):
     def _build_prompt(self, req: ExtractTurn.Goal) -> str:
         return (
             'Task: semantic extraction for reception flow.\n'
+            'The visible conversation transcript is provided separately as chat history.\n'
+            'Use the full transcript to interpret the latest user utterance in session context.\n'
             f'phase={req.phase}\n'
             f'working_name={req.working_info.name}\n'
             f'working_affiliation={req.working_info.affiliation}\n'
@@ -224,6 +227,8 @@ class SemanticExtractorServer(Node):
             '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"name","ambiguity":"low","requires_confirmation":false,"confidence":0.93,"evidence":"states the visitor name","grounded_segments":["島中"],"operations":[{"op":"set_slot","slot":"name","value":"島中","grounded_text":"島中","confidence":0.93}]}\n'
             '- context: phase=collecting focus_slot=affiliation latest_utterance=所属は菅屋研究室です。\n'
             '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"affiliation","ambiguity":"low","requires_confirmation":false,"confidence":0.92,"evidence":"states the affiliation","grounded_segments":["菅屋研究室"],"operations":[{"op":"set_slot","slot":"affiliation","value":"菅屋研究室","grounded_text":"菅屋研究室","confidence":0.92}]}\n'
+            '- context: phase=collecting focus_slot=name latest_utterance=島中です。所属は柴原工業大学です。\n'
+            '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"affiliation","ambiguity":"low","requires_confirmation":false,"confidence":0.92,"evidence":"states both name and affiliation","grounded_segments":["島中","柴原工業大学"],"operations":[{"op":"set_slot","slot":"name","value":"島中","grounded_text":"島中","confidence":0.92},{"op":"set_slot","slot":"affiliation","value":"柴原工業大学","grounded_text":"柴原工業大学","confidence":0.92}]}\n'
             '- context: phase=collecting focus_slot=purpose latest_utterance=用件は打ち合わせです。\n'
             '  output: {"speech_act":"inform","detected_language":"ja","target_slot":"purpose","ambiguity":"low","requires_confirmation":false,"confidence":0.91,"evidence":"states the visit purpose","grounded_segments":["打ち合わせ"],"operations":[{"op":"set_slot","slot":"purpose","value":"打ち合わせ","grounded_text":"打ち合わせ","confidence":0.91}]}\n'
             '- context: phase=confirming latest_utterance=はい。\n'
@@ -285,7 +290,8 @@ class SemanticExtractorServer(Node):
                 max_tokens=self._max_tokens,
                 stateless=True,
                 response_json_schema=_STAGE1_JSON_SCHEMA,
-                total_timeout_sec=20.0,
+                messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
+                total_timeout_sec=45.0,
             )
             self.get_logger().info(
                 f'stage1 provider={provider} completed turn={req.turn.turn_seq} '
@@ -320,7 +326,8 @@ class SemanticExtractorServer(Node):
                 max_tokens=min(self._max_tokens, 180),
                 stateless=True,
                 response_json_schema=_STAGE1_JSON_SCHEMA,
-                total_timeout_sec=12.0,
+                messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
+                total_timeout_sec=30.0,
             )
             self.get_logger().info(
                 f'stage1 repair provider={provider} completed turn={req.turn.turn_seq} '
@@ -450,7 +457,8 @@ class SemanticExtractorServer(Node):
                 max_tokens=min(self._max_tokens, 96),
                 stateless=True,
                 response_json_schema=RECEPTION_CONFIRMATION_RESCUE_JSON_SCHEMA,
-                total_timeout_sec=12.0,
+                messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
+                total_timeout_sec=30.0,
             )
             rescue_payload = extract_json_object(raw)
         except Exception as exc:  # noqa: BLE001
@@ -513,7 +521,8 @@ class SemanticExtractorServer(Node):
                 max_tokens=min(self._max_tokens, 96),
                 stateless=True,
                 response_json_schema=RECEPTION_SLOT_EXTRACT_JSON_SCHEMA,
-                total_timeout_sec=12.0,
+                messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
+                total_timeout_sec=30.0,
             )
             rescue_payload = extract_json_object(raw)
         except Exception as exc:  # noqa: BLE001
