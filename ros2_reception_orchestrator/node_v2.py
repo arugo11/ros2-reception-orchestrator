@@ -217,6 +217,7 @@ class ReceptionOrchestratorNodeV2(Node):
         self._reception_active = False
         self._pending_visitor_trigger: _QueueVisitorEvent | None = None
         self._visitor_present_latched = False
+        self._auto_start_fired = False
 
         self._reducer = SessionReducer(confidence_threshold=self._semantic_confidence_threshold)
         self._ingestor = TurnIngestor(merge_window_sec=self._followup_merge_window_sec)
@@ -265,6 +266,14 @@ class ReceptionOrchestratorNodeV2(Node):
         self.declare_parameter('conversation.trace_topic', '/reception/conversation_trace')
         self.declare_parameter('visitor_detection.event_topic', '/visitor_detection/events')
         self.declare_parameter('visitor_detection.state_topic', '/visitor_detection/state')
+        self.declare_parameter(
+            'session.auto_start_reception',
+            False,
+        )
+        self.declare_parameter(
+            'session.voice_wake_start_reception',
+            True,
+        )
         self.declare_parameter('conversation_log.enabled', True)
         self.declare_parameter(
             'conversation_log.output_dir',
@@ -298,6 +307,8 @@ class ReceptionOrchestratorNodeV2(Node):
         self._conversation_trace_topic = str(self.get_parameter('conversation.trace_topic').value)
         self._visitor_detection_event_topic = str(self.get_parameter('visitor_detection.event_topic').value)
         self._visitor_detection_state_topic = str(self.get_parameter('visitor_detection.state_topic').value)
+        self._auto_start_reception = bool(self.get_parameter('session.auto_start_reception').value)
+        self._voice_wake_start = bool(self.get_parameter('session.voice_wake_start_reception').value)
         self._conversation_log_enabled = bool(self.get_parameter('conversation_log.enabled').value)
         self._conversation_log_output_dir = str(self.get_parameter('conversation_log.output_dir').value).strip()
         self._conversation_log_format = str(self.get_parameter('conversation_log.format').value).strip()
@@ -390,6 +401,7 @@ class ReceptionOrchestratorNodeV2(Node):
         self._session_transcript = []
         self._reception_active = False
         self._pending_visitor_trigger = None
+        self._auto_start_fired = False
 
     @staticmethod
     def _session_has_user_activity(state: SessionStateData) -> bool:
@@ -533,12 +545,9 @@ class ReceptionOrchestratorNodeV2(Node):
         if self._visitor_present_latched:
             return
         self._visitor_present_latched = True
-        self._event_queue.put(
-            _QueueVisitorEvent(
-                event_type='VISITOR_TRIGGERED',
-                confidence=float(msg.confidence),
-                detail=f'state_bootstrap:{msg.detector_backend}',
-            )
+        self.get_logger().info(
+            '[SESSION] visitor presence observed on state topic; waiting for VISITOR_TRIGGERED event '
+            f'backend={msg.detector_backend} confidence={float(msg.confidence):.2f}'
         )
 
     def _worker_loop(self) -> None:
@@ -691,6 +700,10 @@ class ReceptionOrchestratorNodeV2(Node):
     def _process_visitor_event(self, event: _QueueVisitorEvent) -> None:
         if event.event_type != 'VISITOR_TRIGGERED':
             return
+        self.get_logger().info(
+            '[SESSION] visitor trigger received '
+            f'confidence={event.confidence:.2f} detail={event.detail}'
+        )
         if self._reception_active:
             self.get_logger().info('[SESSION] visitor trigger ignored because reception is already active')
             return
@@ -703,15 +716,18 @@ class ReceptionOrchestratorNodeV2(Node):
     def _activate_reception(self, event: _QueueVisitorEvent) -> None:
         if self._reception_active:
             return
+        trigger_source = 'visitor_detection'
+        detail = event.detail
+        confidence = float(event.confidence)
         self._reception_active = True
         self._publish_trace_event(
             TraceEventData(
                 event_type='SESSION_STARTED',
                 payload_json=json.dumps(
                     {
-                        'trigger_source': 'visitor_detection',
-                        'detail': event.detail,
-                        'confidence': float(event.confidence),
+                        'trigger_source': trigger_source,
+                        'detail': detail,
+                        'confidence': float(confidence),
                     },
                     ensure_ascii=False,
                 ),
@@ -719,8 +735,8 @@ class ReceptionOrchestratorNodeV2(Node):
             turn_seq=0,
         )
         self.get_logger().info(
-            '[SESSION] reception started by visitor detection '
-            f'confidence={event.confidence:.2f} detail={event.detail}'
+            '[SESSION] reception started '
+            f'trigger={trigger_source} confidence={confidence:.2f} detail={detail}'
         )
         self._submit_visitor_greeting()
         self._publish_state()
@@ -1562,10 +1578,17 @@ class ReceptionOrchestratorNodeV2(Node):
                 return False, 'tts timeout'
             ok = bool(wrapped.result.ok)
             if not ok:
-                self.get_logger().error(
-                    f'[TTS] failed seq={command.turn_seq}: {wrapped.result.error_message or "tts failed"}'
-                )
-                return False, wrapped.result.error_message or 'tts failed'
+                error_message = (wrapped.result.error_message or 'tts failed').strip()
+                lowered = error_message.lower()
+                if 'canceled' in lowered or 'cancelled' in lowered or 'interrupted' in lowered:
+                    self.get_logger().info(
+                        f'[TTS] canceled seq={command.turn_seq}: {error_message}'
+                    )
+                else:
+                    self.get_logger().error(
+                        f'[TTS] failed seq={command.turn_seq}: {error_message}'
+                    )
+                return False, error_message
             self.get_logger().info(f'[TTS] completed seq={command.turn_seq}')
             return True, 'tts_ok'
         except Exception as exc:  # noqa: BLE001

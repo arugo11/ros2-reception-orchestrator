@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import rclpy
@@ -35,6 +36,97 @@ def _stage2_system_prompt(response_language: str) -> str:
         'Generate one concise spoken response in Japanese. '
         'No JSON. No markdown. Keep to 1-2 sentences.'
     )
+
+
+def _normalize_text(value: object) -> str:
+    return ' '.join(str(value or '').split()).strip().lower()
+
+
+def _looks_like_question(text: str) -> bool:
+    compact = ' '.join(text.split()).strip()
+    if not compact:
+        return False
+    if '?' in compact or '？' in compact:
+        return True
+    question_markers = (
+        '教えて',
+        '伺',
+        'いただけます',
+        'よろしいでしょうか',
+        'please',
+        'could you',
+        'may i',
+        'what brings you',
+    )
+    lowered = compact.lower()
+    return any(marker in lowered for marker in question_markers)
+
+
+def _contains_expected_slot_marker(dialog_act: str, text: str, response_language: str) -> bool:
+    lowered = _normalize_text(text)
+    language = _sanitize_response_language(response_language)
+    markers: tuple[str, ...]
+    if language == 'en':
+        marker_map = {
+            'ask_name': ('name',),
+            'clarify_name': ('name',),
+            'ask_affiliation': ('affiliation', 'organization', 'company', 'school', 'department', 'lab'),
+            'clarify_affiliation': ('affiliation', 'organization', 'company', 'school', 'department', 'lab'),
+            'ask_purpose': ('purpose', 'reason', 'what brings you here'),
+            'clarify_purpose': ('purpose', 'reason', 'what brings you here'),
+        }
+        markers = marker_map.get(dialog_act, ())
+    else:
+        marker_map = {
+            'ask_name': ('名前', 'お名前'),
+            'clarify_name': ('名前', 'お名前'),
+            'ask_affiliation': ('所属', 'ご所属'),
+            'clarify_affiliation': ('所属', 'ご所属'),
+            'ask_purpose': ('用件', 'ご用件', '目的'),
+            'clarify_purpose': ('用件', 'ご用件', '目的'),
+        }
+        markers = marker_map.get(dialog_act, ())
+    return any(marker.lower() in lowered for marker in markers)
+
+
+def _is_valid_rendered_response(req: Any, text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if len(normalized) > 200:
+        return False
+    if normalized == _normalize_text(getattr(req, 'latest_user_text', '')):
+        return False
+
+    dialog_act = str(getattr(req, 'dialog_act', '') or '')
+    response_language = str(getattr(req, 'response_language', 'ja') or 'ja')
+
+    if dialog_act in {
+        'ask_name',
+        'ask_affiliation',
+        'ask_purpose',
+        'clarify_name',
+        'clarify_affiliation',
+        'clarify_purpose',
+    }:
+        return _looks_like_question(text) and _contains_expected_slot_marker(dialog_act, text, response_language)
+
+    if dialog_act == 'confirm_snapshot':
+        working = getattr(req, 'working_info', None)
+        values = [
+            _normalize_text(getattr(working, 'name', '')),
+            _normalize_text(getattr(working, 'affiliation', '')),
+            _normalize_text(getattr(working, 'purpose', '')),
+        ]
+        return _looks_like_question(text) and any(value and value in normalized for value in values)
+
+    if dialog_act in {'notify_waiting', 'acknowledge_waiting'}:
+        return not _looks_like_question(text)
+
+    if dialog_act == 'retry':
+        return _looks_like_question(text)
+
+    return True
 
 
 class ResponsePlannerServer(Node):
@@ -118,8 +210,16 @@ class ResponsePlannerServer(Node):
                 messages=clone_chat_messages(list(getattr(req, 'transcript_messages', []))),
             )
             cleaned = text.strip()
-            result.text = cleaned or fallback
-            result.used_fallback = not bool(cleaned)
+            if cleaned and _is_valid_rendered_response(req, cleaned):
+                result.text = cleaned
+                result.used_fallback = False
+            else:
+                if cleaned:
+                    self.get_logger().warn(
+                        f'render produced invalid response for dialog_act={req.dialog_act}; fallback used: {cleaned}'
+                    )
+                result.text = fallback
+                result.used_fallback = True
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(f'render failed, fallback used: {exc}')
             result.text = fallback

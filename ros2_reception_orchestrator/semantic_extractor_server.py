@@ -603,7 +603,7 @@ class SemanticExtractorServer(Node):
         utterance = str(req.turn.text or '').strip()
         expected_slot = self._preferred_slot(req, payload)
 
-        if _should_override_to_purpose(req=req, expected_slot=expected_slot, utterance=utterance):
+        if _should_override_to_purpose(req=req, payload=payload, expected_slot=expected_slot, utterance=utterance):
             payload = dict(payload)
             payload['speech_act'] = 'correction' if req.phase == 'confirming' else 'inform'
             payload['target_slot'] = 'purpose'
@@ -882,6 +882,7 @@ def _extract_affiliation_value(text: str) -> str:
 def _should_override_to_purpose(
     *,
     req: ExtractTurn.Goal,
+    payload: dict[str, Any] | None,
     expected_slot: str,
     utterance: str,
 ) -> bool:
@@ -892,6 +893,11 @@ def _should_override_to_purpose(
     if not _looks_like_visit_purpose_utterance(utterance):
         return False
     if req.phase == 'confirming':
+        return True
+    current_target = SemanticExtractorServer._sanitize_slot(
+        payload.get('target_slot', 'none') if isinstance(payload, dict) else 'none'
+    )
+    if current_target == 'name':
         return True
     return expected_slot == 'purpose'
 

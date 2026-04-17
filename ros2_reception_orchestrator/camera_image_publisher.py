@@ -69,17 +69,20 @@ class CameraImagePublisher(Node):
     def _open_capture(camera_device: str):
         attempts: list[tuple[object, int | None, str]] = []
         text = str(camera_device or '').strip()
-        if text:
-            attempts.append((text, None, f'path:{text}'))
-            if hasattr(cv2, 'CAP_V4L2'):
-                attempts.append((text, cv2.CAP_V4L2, f'path:{text}:CAP_V4L2'))
+        # Prefer V4L2 first: default backend may try GStreamer on /dev/video* and log noisy errors.
         if text.startswith('/dev/video'):
             suffix = text.removeprefix('/dev/video')
             if suffix.isdigit():
                 index = int(suffix)
                 if hasattr(cv2, 'CAP_V4L2'):
+                    attempts.append((text, cv2.CAP_V4L2, f'path:{text}:CAP_V4L2'))
                     attempts.append((index, cv2.CAP_V4L2, f'index:{index}:CAP_V4L2'))
+                attempts.append((text, None, f'path:{text}'))
                 attempts.append((index, None, f'index:{index}'))
+        elif text:
+            if hasattr(cv2, 'CAP_V4L2'):
+                attempts.append((text, cv2.CAP_V4L2, f'path:{text}:CAP_V4L2'))
+            attempts.append((text, None, f'path:{text}'))
         errors: list[str] = []
         for source, backend, label in attempts:
             capture = cv2.VideoCapture(source) if backend is None else cv2.VideoCapture(source, backend)

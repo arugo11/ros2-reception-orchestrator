@@ -161,6 +161,7 @@ class VisitorDetectionNode(Node):
         self._started_monotonic = time.monotonic()
         self._last_seen_stamp = self.get_clock().now().to_msg()
         self._last_state_fingerprint = ''
+        self._face_detect_logged = False
 
         self._state_publisher = self.create_publisher(
             VisitorDetectionState,
@@ -187,7 +188,7 @@ class VisitorDetectionNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter('camera_image_topic', '/camera/image_raw')
         self.declare_parameter('detector_model_path', '')
-        self.declare_parameter('detector_backend', 'opencv_haar_upperbody')
+        self.declare_parameter('detector_backend', 'opencv_face_detector_yn')
         self.declare_parameter('state_topic', '/visitor_detection/state')
         self.declare_parameter('event_topic', '/visitor_detection/events')
         self.declare_parameter('min_confidence', 0.8)
@@ -237,6 +238,9 @@ class VisitorDetectionNode(Node):
         self._sync_fault_state(detail='')
         if detections:
             self._last_seen_stamp = self.get_clock().now().to_msg()
+            self._log_detection_observations(detections)
+        else:
+            self._face_detect_logged = False
         events = self._controller.update(now_monotonic, detections)
         self._publish_events(events)
         self._publish_state()
@@ -280,12 +284,50 @@ class VisitorDetectionNode(Node):
 
     def _publish_events(self, events: list[DetectionEventData]) -> None:
         for item in events:
+            self._log_detection_event(item)
             msg = VisitorDetectionEvent()
             msg.timestamp = self.get_clock().now().to_msg()
             msg.event_type = item.event_type
             msg.confidence = float(item.confidence)
             msg.detail = item.detail
             self._event_publisher.publish(msg)
+
+    def _log_detection_observations(self, observations: list[DetectionObservation]) -> None:
+        if not observations or self._face_detect_logged:
+            return
+        self._face_detect_logged = True
+        best = max(float(item.confidence) for item in observations)
+        trigger_armed = getattr(getattr(self, '_controller', None), 'trigger_armed', False)
+        self.get_logger().info(
+            '[VISITOR_DETECTION] Face detect '
+            f'backend={self._detector_backend} candidates={len(observations)} '
+            f'max_confidence={best:.2f} trigger_armed={trigger_armed}'
+        )
+
+    def _log_detection_event(self, item: DetectionEventData) -> None:
+        if item.event_type == 'VISITOR_TRIGGERED':
+            self.get_logger().info(
+                '[VISITOR_DETECTION] visitor detected; signaling reception start '
+                f'backend={self._detector_backend} confidence={float(item.confidence):.2f}'
+            )
+            return
+        if item.event_type == 'VISITOR_LEFT':
+            self.get_logger().info(
+                '[VISITOR_DETECTION] visitor left frame; trigger re-arm pending'
+            )
+            return
+        if item.event_type == 'CAMERA_FAULT':
+            self.get_logger().warning(
+                '[VISITOR_DETECTION] camera fault '
+                f'backend={self._detector_backend} detail={item.detail}'
+            )
+            return
+        if item.event_type == 'CAMERA_RECOVERED':
+            self.get_logger().info(
+                '[VISITOR_DETECTION] camera recovered '
+                f'backend={self._detector_backend}'
+            )
+            return
 
     def _publish_state(self, *, force: bool = False) -> None:
         msg = VisitorDetectionState()
