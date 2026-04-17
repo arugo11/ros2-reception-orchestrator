@@ -149,6 +149,44 @@ def test_contextual_override_prefers_purpose_for_visit_intent() -> None:
     assert adjusted['operations'][0]['value'] == '中山さんに会いに来ました'
 
 
+def test_contextual_override_retargets_name_misclassification_to_purpose() -> None:
+    server = SemanticExtractorServer.__new__(SemanticExtractorServer)
+    req = SimpleNamespace(
+        phase='collecting',
+        pending_clarification_slot='',
+        focus_slot='name',
+        last_system_act='ask_name',
+        working_info=SimpleNamespace(name='', affiliation='', purpose=''),
+        turn=SimpleNamespace(text='中山さんに会いに来ました。'),
+    )
+    payload = {
+        'speech_act': 'inform',
+        'target_slot': 'name',
+        'ambiguity': 'low',
+        'requires_confirmation': False,
+        'confidence': 0.94,
+        'evidence': 'states a person name',
+        'grounded_segments': ['中山'],
+        'operations': [
+            {
+                'op': 'set_slot',
+                'slot': 'name',
+                'value': '中山',
+                'grounded_text': '中山さんに会いに来ました。',
+                'confidence': 0.94,
+            }
+        ],
+    }
+
+    adjusted = server._apply_contextual_overrides(req, payload)
+
+    assert adjusted is not None
+    assert adjusted['speech_act'] == 'inform'
+    assert adjusted['target_slot'] == 'purpose'
+    assert adjusted['operations'][0]['slot'] == 'purpose'
+    assert adjusted['operations'][0]['value'] == '中山さんに会いに来ました'
+
+
 def test_contextual_override_rejects_incomplete_affiliation_fragment() -> None:
     server = SemanticExtractorServer.__new__(SemanticExtractorServer)
     req = SimpleNamespace(

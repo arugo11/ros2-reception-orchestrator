@@ -196,6 +196,8 @@ def generate_launch_description() -> LaunchDescription:
     camera_width = LaunchConfiguration('camera_width')
     camera_height = LaunchConfiguration('camera_height')
     camera_fps = LaunchConfiguration('camera_fps')
+    session_auto_start_reception = LaunchConfiguration('session_auto_start_reception')
+    session_voice_wake_start_reception = LaunchConfiguration('session_voice_wake_start_reception')
 
     resolved_asr_profile = PythonExpression([
         "'", asr_profile, "' if '", asr_profile, "' else ('", profile_name, "' if '", profile_name, "' else 'qwen3_asr_0_6b_cpu')"
@@ -304,7 +306,7 @@ def generate_launch_description() -> LaunchDescription:
             '--params-file',
             reception_params_file_value,
             '-p',
-            'detector_backend:=opencv_haar_upperbody',
+            'detector_backend:=opencv_face_detector_yn',
         ]
         if detector_model_path:
             command.extend(['-p', f'detector_model_path:={detector_model_path}'])
@@ -362,6 +364,12 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 'session.inactivity_reset_sec': ParameterValue(
                     session_inactivity_reset_sec, value_type=int
+                ),
+                'session.auto_start_reception': ParameterValue(
+                    session_auto_start_reception, value_type=bool
+                ),
+                'session.voice_wake_start_reception': ParameterValue(
+                    session_voice_wake_start_reception, value_type=bool
                 ),
             },
         ],
@@ -574,6 +582,19 @@ def generate_launch_description() -> LaunchDescription:
                 'camera_fps',
                 default_value='30.0',
                 description='Camera FPS for the built-in camera publisher.',
+            ),
+            DeclareLaunchArgument(
+                'session_auto_start_reception',
+                default_value='false',
+                description='Start reception without VISITOR_TRIGGERED after backends are ready (mic-only / no camera).',
+            ),
+            DeclareLaunchArgument(
+                'session_voice_wake_start_reception',
+                default_value='true',
+                description=(
+                    'When auto_start is false, start reception on first non-empty ASR utterance '
+                    '(fallback if visitor detection or camera is unavailable).'
+                ),
             ),
             DeclareLaunchArgument(
                 'enable_demo_gui',

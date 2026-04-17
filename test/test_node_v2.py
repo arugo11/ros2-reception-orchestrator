@@ -146,6 +146,26 @@ def test_handle_session_inactivity_resets_active_session_after_timeout() -> None
     assert node._publish_conversation_trace_calls[0]['event_type'] == 'SESSION_TIMEOUT'
 
 
+def test_activate_reception_voice_wake_skips_visitor_greeting() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._reception_active = False
+    node._publish_trace_event_calls = []
+    node._publish_trace_event = lambda trace, turn_seq: node._publish_trace_event_calls.append((trace, turn_seq))
+    node._submit_visitor_greeting_called = False
+    node._submit_visitor_greeting = lambda: setattr(node, '_submit_visitor_greeting_called', True)
+    node._publish_state_called = False
+    node._publish_state = lambda: setattr(node, '_publish_state_called', True)
+    node._reducer = SimpleNamespace(state=SessionStateData(session_id='session-vw'))
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    node._activate_reception(voice_wake=True)
+
+    assert node._reception_active is True
+    assert node._submit_visitor_greeting_called is False
+    assert node._publish_state_called is True
+    assert node._publish_trace_event_calls[0][0].event_type == 'SESSION_STARTED'
+
+
 def test_process_visitor_event_activates_reception_when_ready() -> None:
     node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
     node._reception_active = False
@@ -179,6 +199,25 @@ def test_process_visitor_event_defers_until_ready() -> None:
     node._process_visitor_event(event)
 
     assert node._pending_visitor_trigger is event
+
+
+def test_visitor_detection_state_does_not_activate_reception() -> None:
+    node = ReceptionOrchestratorNodeV2.__new__(ReceptionOrchestratorNodeV2)
+    node._visitor_present_latched = False
+    node._event_queue = SimpleNamespace(items=[])
+    node._event_queue.put = lambda item: node._event_queue.items.append(item)
+    node.get_logger = lambda: SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    msg = SimpleNamespace(
+        visitor_present=True,
+        confidence=0.88,
+        detector_backend='opencv_face_detector_yn',
+    )
+
+    node._on_visitor_detection_state(msg)
+
+    assert node._visitor_present_latched is True
+    assert node._event_queue.items == []
 
 
 def test_extract_json_object_accepts_fenced_json() -> None:

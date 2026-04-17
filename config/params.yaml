@@ -3,6 +3,8 @@ reception_orchestrator:
     discord.adapter_name: "discord"
     discord.parent_channel_id: ""
     session.inactivity_reset_sec: 30
+    session.auto_start_reception: false
+    session.voice_wake_start_reception: true
     asr.utterance_topic: "/asr/utterances"
     extract.action_name: "/reception/extract_turn"
     render.action_name: "/reception/render_dialog"
@@ -41,7 +43,7 @@ visitor_detection_node:
   ros__parameters:
     camera_image_topic: "/camera/image_raw"
     detector_model_path: ""
-    detector_backend: "opencv_haar_upperbody"
+    detector_backend: "opencv_face_detector_yn"
     state_topic: "/visitor_detection/state"
     event_topic: "/visitor_detection/events"
     min_confidence: 0.8
